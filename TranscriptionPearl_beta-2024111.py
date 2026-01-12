@@ -307,18 +307,15 @@ class App(TkinterDnD.Tk):
         
         # Define model list
         self.model_list = [
-            "gpt-4o",
-            "gpt-4o-2024-08-06",
-            "gpt-4o-mini",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-sonnet-20240620",
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
-            "gemini-1.5-flash-001",
-            "gemini-1.5-flash-002",
-            "gemini-1.5-pro-001",
-            "gemini-1.5-pro-002"
+            "gpt-5.2-2025-12-11",
+            "gpt-5.2-pro-2025-12-11",
+            "gpt-5-mini-2025-08-07",
+            "gpt-5-nano-2025-08-07",
+            "claude-sonnet-4-5",
+            "claude-claude-haiku-4-5",
+            "claude-opus-4-5",
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview"
         ]
 
         # Check if settings file exists and load it
@@ -611,28 +608,25 @@ class App(TkinterDnD.Tk):
         self.HTR_user_prompt = '''Carefully transcribe this page from an 18th/19th century document. In your response, write: "Transcription:" followed only by your accurate transcription.'''
         
         self.HTR_val_text = "Transcription:"
-        self.HTR_model = "gemini-1.5-pro-002"
+        self.HTR_model = "gemini-3-pro-preview"
 
         self.correct_system_prompt = '''Your task is to compare handwritten pages of text with corresponding draft transcriptions, correcting the transcription to produce an accurate, publishable transcript. Be sure that the spelling, syntax, punctuation, and line breaks in the transcription match those on the handwritten page to preserve the historical integrity of the document. Numbers also easily misread, so pay close attention to digits. You must also ensure that the transcription begins and ends in the same place as the handwritten document. Include any catchwords at the bottom of the page. In your response write "Corrected Transcript:" followed by your corrected transcription.'''
         
         self.correct_user_prompt = '''Your task is to use the handwritten page image to correct the following transcription, retaining the spelling, syntax, punctuation, line breaks, catchwords, etc of the original.\n\n{text_to_process}'''
         
         self.correct_val_text = "Corrected Transcript:"
-        self.correct_model = "claude-3-5-sonnet-20240620"
+        self.correct_model = "claude-sonnet-4-5"
 
         self.model_list = [
-            "gpt-4o",
-            "gpt-4o-2024-08-06",
-            "gpt-4o-mini",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-sonnet-20240620",
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
-            "gemini-1.5-flash-001",
-            "gemini-1.5-flash-002",
-            "gemini-1.5-pro-001",
-            "gemini-1.5-pro-002"
+            "gpt-5.2-2025-12-11",
+            "gpt-5.2-pro-2025-12-11",
+            "gpt-5-mini-2025-08-07",
+            "gpt-5-nano-2025-08-07",
+            "claude-sonnet-4-5",
+            "claude-claude-haiku-4-5",
+            "claude-opus-4-5",
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview"
         ]
 
         self.openai_api_key = ""
@@ -760,13 +754,28 @@ class App(TkinterDnD.Tk):
             
             # Save the image with high quality
             img.save(output_path, "JPEG", quality=95)
+
+    def convert_image_to_jpeg(self, image_path, output_path):
+        if os.path.exists(output_path):
+            return output_path
+
+        with Image.open(image_path) as img:
+            if img.mode in ('RGBA', 'LA'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1])
+                img = background
+            else:
+                img = img.convert('RGB')
+
+            img.save(output_path, "JPEG", quality=95)
+
+        return output_path
     
     def process_new_images(self, source_paths):
         successful_copies = 0
         for source_path in source_paths:
             new_index = len(self.main_df)
-            file_extension = os.path.splitext(source_path)[1].lower()
-            new_file_name = f"{new_index+1:04d}_p{new_index+1:03d}{file_extension}"
+            new_file_name = f"{new_index+1:04d}_p{new_index+1:03d}.jpg"
             dest_path = os.path.join(self.images_directory, new_file_name)
             
             try:
@@ -1376,6 +1385,7 @@ class App(TkinterDnD.Tk):
         file_paths = re.findall(r'\{[^}]*\}|\S+', file_paths)
         
         valid_images = []
+        temp_converted_images = []
         pdf_files = []
         invalid_files = []
 
@@ -1387,21 +1397,15 @@ class App(TkinterDnD.Tk):
                 lower_path = file_path.lower()
                 if lower_path.endswith(('.jpg', '.jpeg')):
                     valid_images.append(file_path)
-                elif lower_path.endswith('.png'):
-                    # Convert PNG to JPEG
+                elif lower_path.endswith(('.png', '.tif', '.tiff')):
+                    # Convert non-JPEG images to JPEG
                     try:
-                        img = Image.open(file_path)
-                        if img.mode in ('RGBA', 'LA'):
-                            # Remove alpha channel
-                            background = Image.new('RGB', img.size, (255, 255, 255))
-                            background.paste(img, mask=img.split()[-1])
-                            img = background
-                        # Create temporary JPEG file
                         jpeg_path = os.path.splitext(file_path)[0] + '_converted.jpg'
-                        img.convert('RGB').save(jpeg_path, 'JPEG', quality=95)
+                        jpeg_path = self.convert_image_to_jpeg(file_path, jpeg_path)
                         valid_images.append(jpeg_path)
+                        temp_converted_images.append(jpeg_path)
                     except Exception as e:
-                        print(f"Error converting PNG file {file_path}: {e}")
+                        print(f"Error converting image file {file_path}: {e}")
                         invalid_files.append(file_path)
                 elif lower_path.endswith('.pdf'):
                     pdf_files.append(file_path)
@@ -1415,12 +1419,11 @@ class App(TkinterDnD.Tk):
             self.process_new_images(valid_images)
             
             # Clean up temporary converted files
-            for image_path in valid_images:
-                if image_path.endswith('_converted.jpg'):
-                    try:
-                        os.remove(image_path)
-                    except Exception as e:
-                        print(f"Error removing temporary file {image_path}: {e}")
+            for image_path in temp_converted_images:
+                try:
+                    os.remove(image_path)
+                except Exception as e:
+                    print(f"Error removing temporary file {image_path}: {e}")
 
         # Process PDF files
         if pdf_files:
@@ -1491,7 +1494,16 @@ class App(TkinterDnD.Tk):
         os.makedirs(backup_directory, exist_ok=True)
 
         # Get image and text files
-        image_files = [f for f in os.listdir(self.directory_path) if f.lower().endswith((".jpg", ".jpeg"))]
+        supported_extensions = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
+        image_files = {}
+        for file_name in os.listdir(self.directory_path):
+            extension = os.path.splitext(file_name)[1].lower()
+            if extension in supported_extensions:
+                base_name = os.path.splitext(file_name)[0]
+                if base_name not in image_files or extension in (".jpg", ".jpeg"):
+                    image_files[base_name] = file_name
+
+        image_files = list(image_files.values())
         text_files = [f for f in os.listdir(self.directory_path) if f.lower().endswith(".txt")]
 
         if not image_files:
@@ -1514,6 +1526,10 @@ class App(TkinterDnD.Tk):
         # Populate the DataFrame
         for i, (image_file, text_file) in enumerate(zip(image_files, text_files), start=1):
             image_path = os.path.join(self.directory_path, image_file)
+            extension = os.path.splitext(image_file)[1].lower()
+            if extension not in (".jpg", ".jpeg"):
+                jpeg_path = os.path.splitext(image_path)[0] + ".jpg"
+                image_path = self.convert_image_to_jpeg(image_path, jpeg_path)
             text_path = os.path.join(self.directory_path, text_file)
 
             # Create backup image file with resizing
@@ -1564,8 +1580,16 @@ class App(TkinterDnD.Tk):
             os.makedirs(backup_directory, exist_ok=True)
 
             # Load image files
-            image_files = [file for file in os.listdir(self.directory_path) 
-                        if file.lower().endswith((".jpg", ".jpeg"))]
+            supported_extensions = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
+            image_files = {}
+            for file_name in os.listdir(self.directory_path):
+                extension = os.path.splitext(file_name)[1].lower()
+                if extension in supported_extensions:
+                    base_name = os.path.splitext(file_name)[0]
+                    if base_name not in image_files or extension in (".jpg", ".jpeg"):
+                        image_files[base_name] = file_name
+
+            image_files = list(image_files.values())
 
             if not image_files:
                 messagebox.showinfo("No Files", "No image files found in the selected directory.")
@@ -1577,13 +1601,17 @@ class App(TkinterDnD.Tk):
             # Populate the DataFrame
             for i, image_file in enumerate(image_files, start=1):
                 image_path = os.path.join(self.directory_path, image_file)
+                extension = os.path.splitext(image_file)[1].lower()
+                if extension not in (".jpg", ".jpeg"):
+                    jpeg_path = os.path.splitext(image_path)[0] + ".jpg"
+                    image_path = self.convert_image_to_jpeg(image_path, jpeg_path)
 
                 # Create backup image file with resizing
                 backup_image_path = os.path.join(backup_directory, f"{os.path.splitext(image_file)[0]}.jpg")
                 self.resize_image(image_path, backup_image_path)
 
                 # Create a blank text file with the same name as the image file
-                text_path = os.path.join(self.directory_path, os.path.splitext(image_file)[0] + ".txt")
+                text_path = os.path.join(self.directory_path, os.path.splitext(os.path.basename(image_path))[0] + ".txt")
                 with open(text_path, "w", encoding='utf-8') as f:
                     f.write("")
 
