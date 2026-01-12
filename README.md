@@ -65,7 +65,7 @@ Transcription Pearl helps researchers process and transcribe image-based documen
 
 1. Clone the repository
 ```bash
-git clone https://github.com/mhumphries2323/Transcription_Pearl
+git clone https://github.com/oconnorv/Transcription_Pearl
 ```
 
 2. Install required packages
