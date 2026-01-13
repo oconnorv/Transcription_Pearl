@@ -41,6 +41,7 @@ Transcription Pearl helps researchers process and transcribe image-based documen
 - Progress tracking
 - Multiple text draft versions
 - Image Pre-Processsing Tool
+- Google Vision OCR option with hOCR export (requires Vision API key)
 
 ## Prerequisites
 
