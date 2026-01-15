@@ -50,6 +50,7 @@ Transcription Pearl helps researchers process and transcribe image-based documen
   - OpenAI
   - Google Gemini
   - Anthropic Claude
+  - Google Vision
 
 ## Dependencies
 
@@ -61,6 +62,7 @@ Transcription Pearl helps researchers process and transcribe image-based documen
 - openai
 - anthropic
 - google.generativeai
+- Google Cloud CLI
 
 ## Installation
 
