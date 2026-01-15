@@ -63,6 +63,7 @@ Transcription Pearl helps researchers process and transcribe image-based documen
 - anthropic
 - google.generativeai
 - Google Cloud CLI
+- Google Vision Python Client Library
 
 ## Installation
 
