@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 import html
-import importlib.util
 
 # # Import Local Scripts
 from util.subs.ImageSplitter import ImageSplitter
@@ -23,6 +22,8 @@ import anthropic
 
 # Google API
 import google.generativeai as genai
+from google.cloud import vision
+from google.api_core.client_options import ClientOptions
 
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
@@ -2638,15 +2639,6 @@ class App(TkinterDnD.Tk):
 
         if not image_path or not os.path.exists(image_path):
             raise ValueError("Image path not found for Vision OCR.")
-
-        if importlib.util.find_spec("google.cloud.vision") is None:
-            raise ImportError(
-                "google-cloud-vision is required for Vision OCR. "
-                "Install it with: pip install google-cloud-vision"
-            )
-
-        from google.cloud import vision
-        from google.api_core.client_options import ClientOptions
 
         client_options = ClientOptions(api_key=self.google_vision_api_key)
         client = vision.ImageAnnotatorClient(client_options=client_options)
