@@ -7,6 +7,8 @@ from PIL import Image, ImageTk, ImageOps
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+import html
+import importlib.util
 
 # # Import Local Scripts
 from util.subs.ImageSplitter import ImageSplitter
@@ -154,6 +156,7 @@ class App(TkinterDnD.Tk):
         self.file_menu.add_separator()
 
         self.file_menu.add_command(label="Export", command=self.manual_export)
+        self.file_menu.add_command(label="Export hOCR (Vision OCR)", command=self.manual_export_hocr)
 
         self.file_menu.add_separator()
 
@@ -299,8 +302,8 @@ class App(TkinterDnD.Tk):
         self.settings_file_path = os.path.join(app_data, 'settings.json')
         
         # Initialize other settings...
-        self.main_df = pd.DataFrame(columns=["Index", "Page", "Original_Text", "Initial_Draft_Text", 
-                                        "Final_Draft", "Image_Path", "Text_Path", "Text_Toggle"])
+        self.main_df = pd.DataFrame(columns=["Index", "Page", "Original_Text", "Initial_Draft_Text",
+                                        "Final_Draft", "Image_Path", "Text_Path", "Text_Toggle", "Vision_OCR"])
         
         # First set default values
         self.restore_defaults()
@@ -315,7 +318,8 @@ class App(TkinterDnD.Tk):
             "claude-claude-haiku-4-5",
             "claude-opus-4-5",
             "gemini-3-pro-preview",
-            "gemini-3-flash-preview"
+            "gemini-3-flash-preview",
+            "google-vision-ocr"
         ]
 
         # Check if settings file exists and load it
@@ -343,7 +347,7 @@ class App(TkinterDnD.Tk):
             self.error_logging(f"Failed to create temp directories: {e}")
 
         # Reset the main DataFrame
-        self.main_df = pd.DataFrame(columns=["Index", "Page", "Original_Text", "Initial_Draft_Text", "Final_Draft", "Image_Path", "Text_Path", "Text_Toggle"])
+        self.main_df = pd.DataFrame(columns=["Index", "Page", "Original_Text", "Initial_Draft_Text", "Final_Draft", "Image_Path", "Text_Path", "Text_Toggle", "Vision_OCR"])
         self.page_counter = 0
 
 # Settings Window
@@ -433,6 +437,13 @@ class App(TkinterDnD.Tk):
             self.google_api_key_entry.insert(0, self.google_api_key)
             self.google_api_key_entry.grid(row=11, column=1, columnspan=3, padx=10, pady=5, sticky="w")
             self.google_api_key_entry.bind("<KeyRelease>", lambda event: setattr(self, 'google_api_key', self.google_api_key_entry.get()))
+
+            google_vision_api_key_label = tk.Label(frame, text="Google Vision API Key:")
+            google_vision_api_key_label.grid(row=12, column=0, padx=10, pady=5, sticky="w")
+            self.google_vision_api_key_entry = tk.Entry(frame, width=130)
+            self.google_vision_api_key_entry.insert(0, self.google_vision_api_key)
+            self.google_vision_api_key_entry.grid(row=12, column=1, columnspan=3, padx=10, pady=5, sticky="w")
+            self.google_vision_api_key_entry.bind("<KeyRelease>", lambda event: setattr(self, 'google_vision_api_key', self.google_vision_api_key_entry.get()))
 
     def show_HTR_settings(self, frame):
         explanation_label = tk.Label(frame, text=f"""The HTR function sends each image to the API simultaneously and asks it to transcribe the material.""", wraplength=675, justify=tk.LEFT)
@@ -545,6 +556,7 @@ class App(TkinterDnD.Tk):
             'openai_api_key': self.openai_api_key,
             'anthropic_api_key': self.anthropic_api_key,
             'google_api_key': self.google_api_key,
+            'google_vision_api_key': self.google_vision_api_key,
             
             # Model List
             'model_list': self.model_list
@@ -587,6 +599,7 @@ class App(TkinterDnD.Tk):
             self.openai_api_key = settings.get('openai_api_key', '')
             self.anthropic_api_key = settings.get('anthropic_api_key', '')
             self.google_api_key = settings.get('google_api_key', '')
+            self.google_vision_api_key = settings.get('google_vision_api_key', '')
             
             # Model List
             self.model_list = settings.get('model_list', self.model_list)
@@ -626,12 +639,14 @@ class App(TkinterDnD.Tk):
             "claude-claude-haiku-4-5",
             "claude-opus-4-5",
             "gemini-3-pro-preview",
-            "gemini-3-flash-preview"
+            "gemini-3-flash-preview",
+            "google-vision-ocr"
         ]
 
         self.openai_api_key = ""
         self.anthropic_api_key = ""
         self.google_api_key = ""
+        self.google_vision_api_key = ""
         
     def on_settings_window_close(self, window):
         self.toggle_button_state()
@@ -794,7 +809,8 @@ class App(TkinterDnD.Tk):
                     "Final_Draft": [""],
                     "Image_Path": [dest_path],
                     "Text_Path": [text_file_path],
-                    "Text_Toggle": ["Original Text"]
+                    "Text_Toggle": ["Original Text"],
+                    "Vision_OCR": [""]
                 })
                 self.main_df = pd.concat([self.main_df, new_row], ignore_index=True)
                 successful_copies += 1
@@ -924,7 +940,7 @@ class App(TkinterDnD.Tk):
     
     def reset_application(self):
         # Clear the main DataFrame
-        self.main_df = pd.DataFrame(columns=["Index", "Page", "Original_Text", "Initial_Draft_Text", "Final_Draft", "Image_Path", "Text_Path", "Text_Toggle"])
+        self.main_df = pd.DataFrame(columns=["Index", "Page", "Original_Text", "Initial_Draft_Text", "Final_Draft", "Image_Path", "Text_Path", "Text_Toggle", "Vision_OCR"])
         
         # Reset page counter
         self.page_counter = 0
@@ -979,10 +995,13 @@ class App(TkinterDnD.Tk):
             pbf_file = os.path.join(self.project_directory, f"{project_name}.pbf")
 
             # Ensure text columns are of type 'object' (string)
-            text_columns = ['Original_Text', 'Initial_Draft_Text', 'Final_Draft','Text_Toggle']
+            text_columns = ['Original_Text', 'Initial_Draft_Text', 'Final_Draft', 'Text_Toggle', 'Vision_OCR']
             for col in text_columns:
                 if col in self.main_df.columns:
                     self.main_df[col] = self.main_df[col].astype('object')
+
+            if 'Vision_OCR' not in self.main_df.columns:
+                self.main_df['Vision_OCR'] = ''
 
             # Update text files with current content
             for index, row in self.main_df.iterrows():
@@ -1026,7 +1045,7 @@ class App(TkinterDnD.Tk):
             self.main_df = pd.read_csv(pbf_file, encoding='utf-8')
             
             # Ensure text columns are of type 'object' (string)
-            text_columns = ['Original_Text', 'Initial_Draft_Text', 'Final_Draft', 'Text_Toggle']
+            text_columns = ['Original_Text', 'Initial_Draft_Text', 'Final_Draft', 'Text_Toggle', 'Vision_OCR']
             for col in text_columns:
                 if col in self.main_df.columns:
                     self.main_df[col] = self.main_df[col].astype('object')
@@ -1077,7 +1096,7 @@ class App(TkinterDnD.Tk):
             pbf_file = os.path.join(project_directory, f"{project_name}.pbf")
 
             # Ensure text columns are of type 'object' (string)
-            text_columns = ['Original_Text', 'Initial_Draft_Text', 'Final_Draft', 'Text_Toggle']
+            text_columns = ['Original_Text', 'Initial_Draft_Text', 'Final_Draft', 'Text_Toggle', 'Vision_OCR']
             for col in text_columns:
                 if col in self.main_df.columns:
                     self.main_df[col] = self.main_df[col].astype('object')
@@ -1112,7 +1131,7 @@ class App(TkinterDnD.Tk):
                 self.main_df.at[index, 'Text_Path'] = new_text_path
 
                 # Ensure all text fields have at least an empty string
-                for col in ['Original_Text', 'Initial_Draft_Text', 'Final_Draft']:
+                for col in ['Original_Text', 'Initial_Draft_Text', 'Final_Draft', 'Vision_OCR']:
                     if col not in self.main_df.columns or pd.isna(self.main_df.at[index, col]):
                         self.main_df.at[index, col] = ''
 
@@ -1195,6 +1214,8 @@ class App(TkinterDnD.Tk):
                         self.main_df.at[index, 'Initial_Draft_Text'] = ''
                     if 'Final_Draft' not in self.main_df.columns or pd.isna(self.main_df.at[index, 'Final_Draft']):
                         self.main_df.at[index, 'Final_Draft'] = ''
+                    if 'Vision_OCR' not in self.main_df.columns or pd.isna(self.main_df.at[index, 'Vision_OCR']):
+                        self.main_df.at[index, 'Vision_OCR'] = ''
 
                     # Ensure Text_Toggle is set
                     if 'Text_Toggle' not in self.main_df.columns or pd.isna(self.main_df.at[index, 'Text_Toggle']):
@@ -1259,7 +1280,8 @@ class App(TkinterDnD.Tk):
                     "Final_Draft": [""],
                     "Image_Path": [image_path],
                     "Text_Path": [text_path],
-                    "Text_Toggle": ["Original Text"]
+                    "Text_Toggle": ["Original Text"],
+                    "Vision_OCR": [""]
                 })
                 self.main_df = pd.concat([self.main_df, new_row], ignore_index=True)
 
@@ -1484,7 +1506,7 @@ class App(TkinterDnD.Tk):
             return
 
         # Reset DataFrames
-        self.main_df = pd.DataFrame(columns=["Index", "Page", "Original_Text", "Initial_Draft_Text", "Final_Draft", "Image_Path", "Text_Path", "Text_Toggle"])
+        self.main_df = pd.DataFrame(columns=["Index", "Page", "Original_Text", "Initial_Draft_Text", "Final_Draft", "Image_Path", "Text_Path", "Text_Toggle", "Vision_OCR"])
 
         # Reset page counter
         self.page_counter = 0
@@ -1545,7 +1567,7 @@ class App(TkinterDnD.Tk):
                 text_content = f.read()
 
             page = f"{i:04d}_p{i:03d}"  # Format the page number
-            self.main_df.loc[i-1] = [i-1, page, text_content, "", "", "", image_path, text_path, "Original Text"]
+            self.main_df.loc[i-1] = [i-1, page, text_content, "", "", "", image_path, text_path, "Original Text", ""]
 
         # Load the first image and text file
         if len(self.main_df) > 0:
@@ -1562,14 +1584,15 @@ class App(TkinterDnD.Tk):
             self.people_and_places_flag = False
             # Initialize main_df with all required columns
             self.main_df = pd.DataFrame(columns=[
-                "Index", 
-                "Page", 
-                "Original_Text", 
-                "Initial_Draft_Text", 
-                "Final_Draft", 
-                "Image_Path", 
-                "Text_Path", 
-                "Text_Toggle"
+                "Index",
+                "Page",
+                "Original_Text",
+                "Initial_Draft_Text",
+                "Final_Draft",
+                "Image_Path",
+                "Text_Path",
+                "Text_Toggle",
+                "Vision_OCR"
             ])
 
             # Reset the page counter and flags
@@ -1626,7 +1649,8 @@ class App(TkinterDnD.Tk):
                     "Final_Draft": "",
                     "Image_Path": image_path,
                     "Text_Path": text_path,
-                    "Text_Toggle": "Original Text"
+                    "Text_Toggle": "Original Text",
+                    "Vision_OCR": ""
                 }
                 
                 # Add the new row to the DataFrame
@@ -1807,7 +1831,8 @@ class App(TkinterDnD.Tk):
                             "Final_Draft": "",
                             "Image_Path": new_image_path,
                             "Text_Path": new_text_path,
-                            "Text_Toggle": "Original Text"
+                            "Text_Toggle": "Original Text",
+                            "Vision_OCR": ""
                         }
                         
                         new_df.loc[new_index] = new_row
@@ -1974,6 +1999,121 @@ class App(TkinterDnD.Tk):
             f.write(combined_text)
 
         self.toggle_button_state()
+
+    def manual_export_hocr(self):
+        self.toggle_button_state()
+
+        export_path = filedialog.asksaveasfilename(
+            defaultextension=".html",
+            filetypes=[("hOCR HTML files", "*.html"), ("HTML files", "*.html")],
+            title="Save hOCR As"
+        )
+
+        if not export_path:
+            self.toggle_button_state()
+            return
+
+        pages = []
+        missing_count = 0
+
+        for index, row in self.main_df.iterrows():
+            ocr_data = self.parse_vision_ocr_data(row.get("Vision_OCR", ""))
+            if not ocr_data:
+                missing_count += 1
+                continue
+
+            pages.append({
+                "page_number": index + 1,
+                "page_label": row.get("Page", f"page_{index + 1}"),
+                "image_path": row.get("Image_Path", ""),
+                "ocr_data": ocr_data
+            })
+
+        if not pages:
+            self.toggle_button_state()
+            messagebox.showwarning("No Vision OCR Data", "No Vision OCR data was found. Run Google Vision OCR first.")
+            return
+
+        hocr_html = self.build_hocr_document(pages)
+        with open(export_path, "w", encoding="utf-8") as f:
+            f.write(hocr_html)
+
+        self.toggle_button_state()
+
+        if missing_count > 0:
+            messagebox.showwarning(
+                "Missing Vision OCR Data",
+                f"hOCR export completed, but {missing_count} page(s) did not have Vision OCR data."
+            )
+
+    def parse_vision_ocr_data(self, vision_ocr_value):
+        if isinstance(vision_ocr_value, dict):
+            return vision_ocr_value
+        if vision_ocr_value is None or (isinstance(vision_ocr_value, float) and pd.isna(vision_ocr_value)):
+            return None
+        if not isinstance(vision_ocr_value, str) or not vision_ocr_value.strip():
+            return None
+        try:
+            return json.loads(vision_ocr_value)
+        except json.JSONDecodeError:
+            return None
+
+    def build_hocr_document(self, pages):
+        page_blocks = []
+        for page in pages:
+            page_blocks.append(self.build_hocr_page(page))
+
+        body_content = "\n".join(page_blocks)
+        return (
+            "<!DOCTYPE html>\n"
+            "<html>\n"
+            "<head>\n"
+            "  <meta charset=\"utf-8\" />\n"
+            "  <title>hOCR Export</title>\n"
+            "</head>\n"
+            "<body>\n"
+            f"{body_content}\n"
+            "</body>\n"
+            "</html>\n"
+        )
+
+    def build_hocr_page(self, page):
+        ocr_data = page.get("ocr_data", {})
+        image_size = ocr_data.get("image_size", {})
+        width = int(image_size.get("width", 0))
+        height = int(image_size.get("height", 0))
+        image_name = os.path.basename(page.get("image_path", ""))
+        page_id = page.get("page_label", f"page_{page.get('page_number', 1)}")
+
+        page_lines = []
+        for line_index, line in enumerate(ocr_data.get("lines", []), start=1):
+            line_bbox = self.format_bbox(line.get("bbox", [0, 0, 0, 0]))
+            word_spans = []
+            for word_index, word in enumerate(line.get("words", []), start=1):
+                word_bbox = self.format_bbox(word.get("bbox", [0, 0, 0, 0]))
+                word_text = html.escape(word.get("text", ""))
+                word_id = f"word_{page.get('page_number', 1)}_{line_index}_{word_index}"
+                word_spans.append(
+                    f"<span class='ocrx_word' id='{word_id}' title='bbox {word_bbox}'>{word_text}</span>"
+                )
+            line_id = f"line_{page.get('page_number', 1)}_{line_index}"
+            page_lines.append(
+                f"<span class='ocr_line' id='{line_id}' title='bbox {line_bbox}'>"
+                f"{' '.join(word_spans)}"
+                "</span>"
+            )
+
+        lines_html = "\n  ".join(page_lines)
+        return (
+            f"<div class='ocr_page' id='{page_id}' title='image {image_name}; bbox 0 0 {width} {height}'>\n"
+            f"  {lines_html}\n"
+            "</div>"
+        )
+
+    def format_bbox(self, bbox):
+        if not bbox or len(bbox) != 4:
+            return "0 0 0 0"
+        return " ".join(str(int(value)) for value in bbox)
 
 # Routing and Variables Functions
     
@@ -2289,6 +2429,13 @@ class App(TkinterDnD.Tk):
             self.close_progress_window(progress_window)
             messagebox.showwarning("No Images", "No images are available for processing.")
             return
+        
+        selected_engine = self.HTR_model if ai_job == "HTR" else self.correct_model
+        if ai_job == "Correct" and selected_engine.lower() == "google-vision-ocr":
+            self.close_progress_window(progress_window)
+            messagebox.showwarning("Invalid Model", "Google Vision OCR cannot be used for text correction.")
+            self.toggle_button_state()
+            return
 
         self.update_progress(progress_bar, progress_label, processed_rows, total_rows) # Update the progress bar and label
 
@@ -2309,14 +2456,14 @@ class App(TkinterDnD.Tk):
                         text_to_process = ""
                         temp = 0.0
                         val_text = self.HTR_val_text
-                        engine = self.HTR_model
+                        engine = selected_engine
                         user_prompt = self.HTR_user_prompt
                         system_prompt = self.HTR_system_prompt
                     elif ai_job == "Correct":
                         text_to_process = row_data['Original_Text']
                         temp = 0.0
                         val_text = self.correct_val_text
-                        engine = self.correct_model
+                        engine = selected_engine
                         user_prompt = self.correct_user_prompt
                         system_prompt = self.correct_system_prompt
 
@@ -2327,6 +2474,8 @@ class App(TkinterDnD.Tk):
                         time.sleep(1)
                     elif "claude" in engine.lower():
                         futures_to_index[executor.submit(asyncio.run, self.run_send_to_claude_api(system_prompt, user_prompt, temp, image_base64, text_to_process, val_text, engine, index, False, api_timeout=80))] = index
+                    elif engine.lower() == "google-vision-ocr":
+                        futures_to_index[executor.submit(self.send_to_vision_ocr, image_path, index, api_timeout=80)] = index
 
             try:
                 for future in as_completed(futures_to_index):
@@ -2353,13 +2502,21 @@ class App(TkinterDnD.Tk):
 
                 # Process the data from the futures that completed successfully
                 error_count = 0
+                is_vision_engine = selected_engine.lower() == "google-vision-ocr"
                 if all_or_one_flag == "Current Page":
                     if row in responses_dict:
                         if responses_dict[row] == "Error":
                             error_count += 1
                         else:                           
                             if ai_job == "HTR":
-                                self.main_df.at[row, 'Original_Text'] = responses_dict[row]
+                                if is_vision_engine and isinstance(responses_dict[row], dict):
+                                    self.main_df.at[row, 'Original_Text'] = responses_dict[row].get("text", "")
+                                    self.main_df.at[row, 'Vision_OCR'] = json.dumps(
+                                        responses_dict[row].get("ocr_data", {}),
+                                        ensure_ascii=False
+                                    )
+                                else:
+                                    self.main_df.at[row, 'Original_Text'] = responses_dict[row]
                                 self.main_df.at[row, 'Text_Toggle'] = "Original Text"
                             elif ai_job == "Correct":
                                 self.main_df.at[row, 'Initial_Draft_Text'] = responses_dict[row]
@@ -2370,7 +2527,14 @@ class App(TkinterDnD.Tk):
                             error_count += 1
                         else:
                             if ai_job == "HTR":
-                                self.main_df.at[index, 'Original_Text'] = response
+                                if is_vision_engine and isinstance(response, dict):
+                                    self.main_df.at[index, 'Original_Text'] = response.get("text", "")
+                                    self.main_df.at[index, 'Vision_OCR'] = json.dumps(
+                                        response.get("ocr_data", {}),
+                                        ensure_ascii=False
+                                    )
+                                else:
+                                    self.main_df.at[index, 'Original_Text'] = response
                                 self.main_df.at[index, 'Text_Toggle'] = "Original Text"
                             elif ai_job == "Correct":
                                 self.main_df.at[index, 'Initial_Draft_Text'] = response
@@ -2467,6 +2631,122 @@ class App(TkinterDnD.Tk):
                 continue
 
         return "Error", index
+
+    def send_to_vision_ocr(self, image_path, index, api_timeout=25.0, max_retries=2, retries=0):
+        if not self.google_vision_api_key:
+            raise ValueError("Google Vision API key not found or invalid")
+
+        if not image_path or not os.path.exists(image_path):
+            raise ValueError("Image path not found for Vision OCR.")
+
+        if importlib.util.find_spec("google.cloud.vision") is None:
+            raise ImportError(
+                "google-cloud-vision is required for Vision OCR. "
+                "Install it with: pip install google-cloud-vision"
+            )
+
+        from google.cloud import vision
+        from google.api_core.client_options import ClientOptions
+
+        client_options = ClientOptions(api_key=self.google_vision_api_key)
+        client = vision.ImageAnnotatorClient(client_options=client_options)
+
+        with open(image_path, "rb") as image_file:
+            content = image_file.read()
+
+        image = vision.Image(content=content)
+
+        while retries < max_retries:
+            try:
+                response = client.document_text_detection(image=image, timeout=api_timeout)
+                if response.error.message:
+                    raise RuntimeError(response.error.message)
+
+                ocr_payload = self.extract_vision_ocr_data(response, image_path)
+                return {
+                    "text": ocr_payload.get("text", ""),
+                    "ocr_data": ocr_payload
+                }, index
+            except Exception as e:
+                print(f"Vision OCR error: {e}")
+                retries += 1
+                continue
+
+        return "Error", index
+
+    def extract_vision_ocr_data(self, response, image_path):
+        lines = []
+        current_words = []
+
+        try:
+            with Image.open(image_path) as img:
+                image_width, image_height = img.size
+        except Exception:
+            image_width, image_height = 0, 0
+
+        if not response.full_text_annotation or not response.full_text_annotation.pages:
+            return {
+                "text": "",
+                "lines": [],
+                "image_size": {"width": image_width, "height": image_height}
+            }
+
+        for page in response.full_text_annotation.pages:
+            for block in page.blocks:
+                for paragraph in block.paragraphs:
+                    for word in paragraph.words:
+                        word_text = "".join(symbol.text for symbol in word.symbols)
+                        word_bbox = self.bbox_from_vertices(word.bounding_box.vertices)
+                        current_words.append({"text": word_text, "bbox": word_bbox})
+
+                        break_type = None
+                        if word.symbols:
+                            last_symbol = word.symbols[-1]
+                            if last_symbol.property and last_symbol.property.detected_break:
+                                break_type = last_symbol.property.detected_break.type_
+
+                        if break_type in (
+                            vision.TextAnnotation.DetectedBreak.BreakType.LINE_BREAK,
+                            vision.TextAnnotation.DetectedBreak.BreakType.EOL_SURE_SPACE
+                        ):
+                            lines.append(self.build_vision_line(current_words))
+                            current_words = []
+
+                    if current_words:
+                        lines.append(self.build_vision_line(current_words))
+                        current_words = []
+
+        if current_words:
+            lines.append(self.build_vision_line(current_words))
+
+        full_text = response.full_text_annotation.text or "\n".join(
+            line.get("text", "") for line in lines
+        )
+
+        return {
+            "text": full_text.strip(),
+            "lines": lines,
+            "image_size": {"width": image_width, "height": image_height}
+        }
+
+    def bbox_from_vertices(self, vertices):
+        if not vertices:
+            return [0, 0, 0, 0]
+        xs = [vertex.x or 0 for vertex in vertices]
+        ys = [vertex.y or 0 for vertex in vertices]
+        return [min(xs), min(ys), max(xs), max(ys)]
+
+    def merge_bboxes(self, bboxes):
+        if not bboxes:
+            return [0, 0, 0, 0]
+        xs = [bbox[0] for bbox in bboxes] + [bbox[2] for bbox in bboxes]
+        ys = [bbox[1] for bbox in bboxes] + [bbox[3] for bbox in bboxes]
+        return [min(xs), min(ys), max(xs), max(ys)]
+
+    def build_vision_line(self, words):
+        line_text = " ".join(word.get("text", "") for word in words).strip()
+        line_bbox = self.merge_bboxes([word.get("bbox", [0, 0, 0, 0]) for word in words])
+        return {"text": line_text, "bbox": line_bbox, "words": words}
     
     def send_to_gemini_api(self, system_prompt, user_prompt, temp, image_path, text_to_process, val_text, engine, index, formatting_function=False, api_timeout=120.0, max_retries=3, retries=0):
         
