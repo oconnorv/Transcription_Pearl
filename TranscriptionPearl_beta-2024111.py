@@ -1,13 +1,17 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, simpledialog
+from tkinter import scrolledtext
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import pandas as pd
-import fitz, re, base64, os, shutil, time, asyncio, string, json
+import fitz, re, base64, os, shutil, time, asyncio, string, json, copy
 from PIL import Image, ImageTk, ImageOps
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime
 from pathlib import Path
 import html
+from rapidfuzz.distance import Levenshtein
+import pytesseract
+from pytesseract import TesseractNotFoundError
 
 # # Import Local Scripts
 from util.subs.ImageSplitter import ImageSplitter
@@ -63,6 +67,8 @@ class App(TkinterDnD.Tk):
         self.top_frame.grid_columnconfigure(3, weight=0)
         self.top_frame.grid_columnconfigure(4, weight=0)
         self.top_frame.grid_columnconfigure(5, weight=0)
+        self.top_frame.grid_columnconfigure(6, weight=0)
+        self.top_frame.grid_columnconfigure(7, weight=0)
 
         text_label = tk.Label(self.top_frame, text="Displayed Text:")
         text_label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
@@ -70,33 +76,48 @@ class App(TkinterDnD.Tk):
         self.text_type_label = tk.Label(self.top_frame, text="None")
         self.text_type_label.grid(row=0, column=1, sticky="w", padx=5, pady=5)
 
+        self.text_toggle_var = tk.StringVar(value="Original Text")
+        self.text_toggle_dropdown = ttk.Combobox(
+            self.top_frame,
+            textvariable=self.text_toggle_var,
+            values=["Original Text", "Initial Draft", "Final Draft"],
+            state="readonly",
+            width=16
+        )
+        self.text_toggle_dropdown.grid(row=0, column=2, sticky="w", padx=5, pady=5)
+        self.text_toggle_dropdown.bind(
+            "<<ComboboxSelected>>",
+            lambda event: self.set_text_toggle_for_current_page(self.text_toggle_var.get())
+        )
+
         self.button1 = tk.Button(self.top_frame, text="<<", command=lambda: self.navigate_images(-2))
-        self.button1.grid(row=0, column=2, sticky="e", padx=5, pady=5)
+        self.button1.grid(row=0, column=3, sticky="e", padx=5, pady=5)
 
         self.button2 = tk.Button(self.top_frame, text="<", command=lambda: self.navigate_images(-1))
-        self.button2.grid(row=0, column=3, sticky="e", padx=5, pady=5)
+        self.button2.grid(row=0, column=4, sticky="e", padx=5, pady=5)
 
         self.page_counter_var = tk.StringVar()
         self.page_counter_var.set("0 / 0")
 
         page_counter_label = tk.Label(self.top_frame, textvariable=self.page_counter_var)
-        page_counter_label.grid(row=0, column=4, sticky="e", padx=5, pady=5)
+        page_counter_label.grid(row=0, column=5, sticky="e", padx=5, pady=5)
 
         self.button4 = tk.Button(self.top_frame, text=">", command=lambda: self.navigate_images(1))
-        self.button4.grid(row=0, column=5, sticky="e", padx=5, pady=5)
+        self.button4.grid(row=0, column=6, sticky="e", padx=5, pady=5)
 
         self.button5 = tk.Button(self.top_frame, text=">>", command=lambda: self.navigate_images(2))
-        self.button5.grid(row=0, column=6, sticky="e", padx=5, pady=5)
+        self.button5.grid(row=0, column=7, sticky="e", padx=5, pady=5)
 
         self.action_frame = ttk.Frame(self.top_frame, style="Toolbar.TFrame")
-        self.action_frame.grid(row=1, column=0, columnspan=7, sticky="ew", padx=8, pady=(0, 8))
+        self.action_frame.grid(row=1, column=0, columnspan=8, sticky="ew", padx=8, pady=(0, 8))
         self.action_frame.grid_columnconfigure(3, weight=1)
 
         ttk.Label(self.action_frame, text="Quick Import:", style="Toolbar.TLabel").grid(row=0, column=0, padx=(0, 8))
         ttk.Button(self.action_frame, text="Choose Images", style="Primary.TButton", command=self.open_image_files).grid(row=0, column=1, padx=4)
         ttk.Button(self.action_frame, text="Choose Folder", style="Secondary.TButton", command=lambda: self.open_folder(toggle="Images without Text")).grid(row=0, column=2, padx=4)
         ttk.Button(self.action_frame, text="Import PDF", style="Secondary.TButton", command=self.open_pdf).grid(row=0, column=3, padx=4)
-        ttk.Label(self.action_frame, text="Drag & drop also works.", style="ToolbarHint.TLabel").grid(row=0, column=4, sticky="e", padx=(8, 0))
+        ttk.Button(self.action_frame, text="Run OCR + HTR (Gemini)", style="Secondary.TButton", command=self.run_ocr_htr_workflow).grid(row=0, column=4, padx=4)
+        ttk.Label(self.action_frame, text="Drag & drop also works.", style="ToolbarHint.TLabel").grid(row=0, column=5, sticky="e", padx=(8, 0))
 
         self.main_frame = tk.PanedWindow(self, orient=tk.HORIZONTAL)
         self.main_frame.grid(row=1, column=0, sticky="nsew")
@@ -111,6 +132,7 @@ class App(TkinterDnD.Tk):
         self.bottom_frame = tk.Frame(self)
         self.bottom_frame.grid_rowconfigure(0, weight=1)
         self.bottom_frame.grid_rowconfigure(1, weight=0)
+        self.bottom_frame.grid_rowconfigure(2, weight=0)
         self.bottom_frame.grid(row=2, column=0, sticky="nsew")
 
         self.bottom_frame.grid_columnconfigure(0, weight=1)
@@ -139,6 +161,13 @@ class App(TkinterDnD.Tk):
         self.status_var = tk.StringVar(value="")
         self.status_label = ttk.Label(self.bottom_frame, textvariable=self.status_var, style="Status.TLabel", anchor="w")
         self.status_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))
+
+        log_frame = ttk.Frame(self.bottom_frame)
+        log_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
+        log_frame.grid_columnconfigure(0, weight=1)
+        ttk.Label(log_frame, text="Logs:").grid(row=0, column=0, sticky="w")
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=6, wrap=tk.WORD, state="disabled")
+        self.log_text.grid(row=1, column=0, sticky="nsew")
        
         # Initialize initial settings 
         self.initialize_temp_directory()
@@ -189,6 +218,7 @@ class App(TkinterDnD.Tk):
 
         self.file_menu.add_command(label="Export", command=self.manual_export)
         self.file_menu.add_command(label="Export hOCR (Vision OCR)", command=self.manual_export_hocr)
+        self.file_menu.add_command(label="Export hOCR (Aligned Transcript)", command=self.manual_export_aligned_hocr)
 
         self.file_menu.add_separator()
 
@@ -233,6 +263,8 @@ class App(TkinterDnD.Tk):
         self.process_menu.add_separator()
         self.process_menu.add_command(label="Run Google Vision OCR on Current Page", command=lambda: self.run_vision_ocr(all_or_one_flag="Current Page"))
         self.process_menu.add_command(label="Run Google Vision OCR on All Pages", command=lambda: self.run_vision_ocr(all_or_one_flag="All Pages"))
+        self.process_menu.add_command(label="Run Tesseract OCR on Current Page", command=lambda: self.run_tesseract_ocr(all_or_one_flag="Current Page"))
+        self.process_menu.add_command(label="Run Tesseract OCR on All Pages", command=lambda: self.run_tesseract_ocr(all_or_one_flag="All Pages"))
 
         self.process_menu.add_separator()
         
@@ -354,7 +386,8 @@ class App(TkinterDnD.Tk):
             "claude-opus-4-5",
             "gemini-3-pro-preview",
             "gemini-3-flash-preview",
-            "google-vision-ocr"
+            "google-vision-ocr",
+            "tesseract-ocr"
         ]
 
         # Check if settings file exists and load it
@@ -675,7 +708,8 @@ class App(TkinterDnD.Tk):
             "claude-opus-4-5",
             "gemini-3-pro-preview",
             "gemini-3-flash-preview",
-            "google-vision-ocr"
+            "google-vision-ocr",
+            "tesseract-ocr"
         ]
 
         self.openai_api_key = ""
@@ -1032,6 +1066,20 @@ class App(TkinterDnD.Tk):
     def clear_status_message(self):
         self.status_var.set("")
         self.process_ui_events()
+
+    def append_log(self, message):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_message = f"[{timestamp}] {message}\n"
+
+        def _append():
+            if not hasattr(self, "log_text"):
+                return
+            self.log_text.config(state="normal")
+            self.log_text.insert(tk.END, log_message)
+            self.log_text.see(tk.END)
+            self.log_text.config(state="disabled")
+
+        self.after(0, _append)
 
     def process_ui_events(self):
         try:
@@ -1407,6 +1455,26 @@ class App(TkinterDnD.Tk):
             self.text_type_label.config(text="No Text")
 
         return text
+
+    def set_text_toggle_for_current_page(self, selection):
+        if self.main_df.empty:
+            return
+        index = self.page_counter
+        if index >= len(self.main_df):
+            return
+        self.main_df.at[index, 'Text_Toggle'] = selection
+        self.load_text()
+
+    def sync_text_toggle_ui(self, index_no):
+        if not hasattr(self, "text_toggle_var"):
+            return
+        if self.main_df.empty or index_no >= len(self.main_df):
+            self.text_toggle_var.set("Original Text")
+            return
+        current_toggle = self.main_df.loc[index_no, 'Text_Toggle']
+        if current_toggle not in ("Original Text", "Initial Draft", "Final Draft"):
+            current_toggle = "Original Text"
+        self.text_toggle_var.set(current_toggle)
     
     def toggle_button_state(self):
                 
@@ -1767,6 +1835,7 @@ class App(TkinterDnD.Tk):
              
     def load_text(self):
         index = self.page_counter
+        self.sync_text_toggle_ui(index)
 
         text = self.find_right_text(index)
 
@@ -2103,8 +2172,8 @@ class App(TkinterDnD.Tk):
         self.toggle_button_state()
 
         export_path = filedialog.asksaveasfilename(
-            defaultextension=".html",
-            filetypes=[("hOCR HTML files", "*.html"), ("HTML files", "*.html")],
+            defaultextension=".hocr",
+            filetypes=[("hOCR files", "*.hocr"), ("HTML files", "*.html")],
             title="Save hOCR As"
         )
 
@@ -2137,6 +2206,11 @@ class App(TkinterDnD.Tk):
             return
 
         hocr_html = self.build_hocr_document(pages)
+        if not self.validate_hocr_document(hocr_html):
+            messagebox.showwarning(
+                "hOCR Validation Warning",
+                "The generated file may not fully comply with hOCR expectations."
+            )
         with open(export_path, "w", encoding="utf-8") as f:
             f.write(hocr_html)
 
@@ -2146,6 +2220,74 @@ class App(TkinterDnD.Tk):
             messagebox.showwarning(
                 "Missing Vision OCR Data",
                 f"hOCR export completed, but {missing_count} page(s) did not have Vision OCR data."
+            )
+
+    def manual_export_aligned_hocr(self):
+        self.toggle_button_state()
+
+        export_path = filedialog.asksaveasfilename(
+            defaultextension=".hocr",
+            filetypes=[("hOCR files", "*.hocr"), ("HTML files", "*.html")],
+            title="Save Aligned hOCR As"
+        )
+
+        if not export_path:
+            self.toggle_button_state()
+            return
+
+        pages = []
+        missing_count = 0
+        missing_text_count = 0
+
+        for index, row in self.main_df.iterrows():
+            ocr_data = self.parse_vision_ocr_data(row.get("Vision_OCR", ""))
+            if not ocr_data:
+                missing_count += 1
+                continue
+
+            transcript_text = self.find_right_text(index)
+            if not transcript_text.strip():
+                missing_text_count += 1
+                continue
+
+            aligned_lines = self.align_transcript_to_ocr(ocr_data, transcript_text)
+
+            pages.append({
+                "page_number": index + 1,
+                "page_label": row.get("Page", f"page_{index + 1}"),
+                "image_path": row.get("Image_Path", ""),
+                "ocr_data": ocr_data,
+                "aligned_lines": aligned_lines
+            })
+
+        if not pages:
+            self.toggle_button_state()
+            messagebox.showwarning(
+                "No Aligned hOCR Data",
+                "No pages had both Vision OCR data and transcript text. Run Google Vision OCR and ensure transcript text exists."
+            )
+            return
+
+        hocr_html = self.build_hocr_document(pages)
+        if not self.validate_hocr_document(hocr_html):
+            messagebox.showwarning(
+                "hOCR Validation Warning",
+                "The generated file may not fully comply with hOCR expectations."
+            )
+        with open(export_path, "w", encoding="utf-8") as f:
+            f.write(hocr_html)
+
+        self.toggle_button_state()
+
+        warnings = []
+        if missing_count > 0:
+            warnings.append(f"{missing_count} page(s) did not have Vision OCR data.")
+        if missing_text_count > 0:
+            warnings.append(f"{missing_text_count} page(s) did not have transcript text to align.")
+        if warnings:
+            messagebox.showwarning(
+                "Aligned hOCR Export Warnings",
+                "Aligned hOCR export completed, but " + " ".join(warnings)
             )
 
     def parse_vision_ocr_data(self, vision_ocr_value):
@@ -2171,6 +2313,8 @@ class App(TkinterDnD.Tk):
             "<html>\n"
             "<head>\n"
             "  <meta charset=\"utf-8\" />\n"
+            "  <meta name=\"ocr-system\" content=\"Transcription Pearl\" />\n"
+            "  <meta name=\"ocr-capabilities\" content=\"ocr_page ocr_line ocrx_word\" />\n"
             "  <title>hOCR Export</title>\n"
             "</head>\n"
             "<body>\n"
@@ -2178,6 +2322,10 @@ class App(TkinterDnD.Tk):
             "</body>\n"
             "</html>\n"
         )
+
+    def validate_hocr_document(self, hocr_html):
+        required_markers = ("class='ocr_page'", "class='ocr_line'", "class='ocrx_word'")
+        return all(marker in hocr_html for marker in required_markers)
 
     def build_hocr_page(self, page):
         ocr_data = page.get("ocr_data", {})
@@ -2188,7 +2336,8 @@ class App(TkinterDnD.Tk):
         page_id = page.get("page_label", f"page_{page.get('page_number', 1)}")
 
         page_lines = []
-        for line_index, line in enumerate(ocr_data.get("lines", []), start=1):
+        lines = page.get("aligned_lines", ocr_data.get("lines", []))
+        for line_index, line in enumerate(lines, start=1):
             line_bbox = self.format_bbox(line.get("bbox", [0, 0, 0, 0]))
             word_spans = []
             for word_index, word in enumerate(line.get("words", []), start=1):
@@ -2216,6 +2365,141 @@ class App(TkinterDnD.Tk):
         if not bbox or len(bbox) != 4:
             return "0 0 0 0"
         return " ".join(str(int(value)) for value in bbox)
+
+    def align_transcript_to_ocr(self, ocr_data, transcript_text):
+        aligned_lines = copy.deepcopy(ocr_data.get("lines", []))
+        ocr_words = []
+        word_refs = []
+        for line_index, line in enumerate(aligned_lines):
+            for word_index, word in enumerate(line.get("words", [])):
+                ocr_words.append(word.get("text", ""))
+                word_refs.append((line_index, word_index))
+
+        transcript_tokens = self.tokenize_transcript(transcript_text)
+        if not ocr_words or not transcript_tokens:
+            return aligned_lines
+
+        aligned_tokens = self.align_tokens(ocr_words, transcript_tokens)
+        if len(aligned_tokens) != len(ocr_words):
+            aligned_tokens = self.pad_alignment(ocr_words, aligned_tokens)
+
+        for token, (line_index, word_index) in zip(aligned_tokens, word_refs):
+            aligned_lines[line_index]["words"][word_index]["text"] = token
+
+        return aligned_lines
+
+    def pad_alignment(self, ocr_words, aligned_tokens):
+        if len(aligned_tokens) < len(ocr_words):
+            aligned_tokens.extend(ocr_words[len(aligned_tokens):])
+        elif len(aligned_tokens) > len(ocr_words):
+            aligned_tokens = aligned_tokens[:len(ocr_words)]
+        return aligned_tokens
+
+    def tokenize_transcript(self, text):
+        return re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE)
+
+    def normalize_token(self, token):
+        return re.sub(r"[^\w]", "", token.lower())
+
+    def align_tokens(self, ocr_tokens, transcript_tokens):
+        normalized_ocr = [self.normalize_token(token) for token in ocr_tokens]
+        normalized_transcript = [self.normalize_token(token) for token in transcript_tokens]
+
+        ocr_len = len(normalized_ocr)
+        transcript_len = len(normalized_transcript)
+        if ocr_len == 0:
+            return []
+
+        band = max(50, abs(ocr_len - transcript_len) + 50)
+        gap_penalty = -0.45
+
+        prev_scores = [float("-inf")] * (transcript_len + 1)
+        prev_scores[0] = 0.0
+        for j in range(1, transcript_len + 1):
+            prev_scores[j] = prev_scores[j - 1] + gap_penalty
+
+        backpointers = [{} for _ in range(ocr_len + 1)]
+
+        for i in range(1, ocr_len + 1):
+            curr_scores = [float("-inf")] * (transcript_len + 1)
+            start = max(1, i - band)
+            end = min(transcript_len, i + band)
+
+            curr_scores[0] = prev_scores[0] + gap_penalty
+            backpointers[i][0] = (i - 1, 0, "delete")
+
+            for j in range(start, end + 1):
+                similarity = Levenshtein.normalized_similarity(
+                    normalized_ocr[i - 1],
+                    normalized_transcript[j - 1]
+                ) / 100.0
+                score_match = prev_scores[j - 1] + similarity
+                score_delete = prev_scores[j] + gap_penalty
+                score_insert = curr_scores[j - 1] + gap_penalty
+
+                if score_match >= score_delete and score_match >= score_insert:
+                    curr_scores[j] = score_match
+                    backpointers[i][j] = (i - 1, j - 1, "match")
+                elif score_delete >= score_insert:
+                    curr_scores[j] = score_delete
+                    backpointers[i][j] = (i - 1, j, "delete")
+                else:
+                    curr_scores[j] = score_insert
+                    backpointers[i][j] = (i, j - 1, "insert")
+
+            prev_scores = curr_scores
+
+        steps = []
+        i, j = ocr_len, transcript_len
+
+        while i > 0 or j > 0:
+            if j not in backpointers[i]:
+                break
+            prev_i, prev_j, action = backpointers[i][j]
+            if action == "match":
+                steps.append(("match", ocr_tokens[i - 1], transcript_tokens[j - 1]))
+            elif action == "delete":
+                steps.append(("delete", ocr_tokens[i - 1], None))
+            elif action == "insert":
+                steps.append(("insert", None, transcript_tokens[j - 1]))
+            i, j = prev_i, prev_j
+
+        steps.reverse()
+        aligned = []
+        pending_prefix = []
+        for action, ocr_token, transcript_token in steps:
+            if action == "insert":
+                if aligned:
+                    aligned[-1] = self.append_token(aligned[-1], transcript_token)
+                else:
+                    pending_prefix.append(transcript_token)
+                continue
+
+            token = transcript_token if action == "match" else ocr_token
+            if pending_prefix:
+                token = self.merge_tokens(pending_prefix + [token])
+                pending_prefix = []
+            aligned.append(token)
+
+        if pending_prefix and aligned:
+            aligned[0] = self.merge_tokens(pending_prefix + [aligned[0]])
+
+        return aligned
+
+    def merge_tokens(self, tokens):
+        text = ""
+        for token in tokens:
+            text = self.append_token(text, token)
+        return text
+
+    def append_token(self, base, token):
+        if not base:
+            return token
+        no_space_before = {".", ",", "!", "?", ":", ";", "%", ")", "]", "}", "»", "’", "”"}
+        no_space_after = {"(", "[", "{", "«", "“", "‘"}
+        if token in no_space_before or base.endswith(tuple(no_space_after)):
+            return f"{base}{token}"
+        return f"{base} {token}"
 
 # Routing and Variables Functions
     
@@ -2543,11 +2827,11 @@ class App(TkinterDnD.Tk):
             return
         
         selected_engine = self.HTR_model if ai_job == "HTR" else self.correct_model
-        if ai_job == "Correct" and selected_engine.lower() == "google-vision-ocr":
+        if ai_job == "Correct" and selected_engine.lower() in ("google-vision-ocr", "tesseract-ocr"):
             self.close_progress_window(progress_window)
             if use_status_message:
                 self.clear_status_message()
-            messagebox.showwarning("Invalid Model", "Google Vision OCR cannot be used for text correction.")
+            messagebox.showwarning("Invalid Model", "OCR engines cannot be used for text correction.")
             self.toggle_button_state()
             return
 
@@ -2590,6 +2874,8 @@ class App(TkinterDnD.Tk):
                         futures_to_index[executor.submit(asyncio.run, self.run_send_to_claude_api(system_prompt, user_prompt, temp, image_base64, text_to_process, val_text, engine, index, False, api_timeout=80))] = index
                     elif engine.lower() == "google-vision-ocr":
                         futures_to_index[executor.submit(self.send_to_vision_ocr, image_path, index, api_timeout=80)] = index
+                    elif engine.lower() == "tesseract-ocr":
+                        futures_to_index[executor.submit(self.send_to_tesseract_ocr, image_path, index)] = index
 
             try:
                 pending_futures = set(futures_to_index)
@@ -2632,22 +2918,24 @@ class App(TkinterDnD.Tk):
 
                 # Process the data from the futures that completed successfully
                 error_count = 0
-                is_vision_engine = selected_engine.lower() == "google-vision-ocr"
+                is_ocr_engine = selected_engine.lower() in ("google-vision-ocr", "tesseract-ocr")
                 if all_or_one_flag == "Current Page":
                     if row in responses_dict:
                         if responses_dict[row] == "Error":
                             error_count += 1
                         else:                           
                             if ai_job == "HTR":
-                                if is_vision_engine and isinstance(responses_dict[row], dict):
-                                    self.main_df.at[row, 'Original_Text'] = responses_dict[row].get("text", "")
+                                if is_ocr_engine and isinstance(responses_dict[row], dict):
+                                    if not self.main_df.at[row, 'Original_Text']:
+                                        self.main_df.at[row, 'Original_Text'] = responses_dict[row].get("text", "")
+                                        self.main_df.at[row, 'Text_Toggle'] = "Original Text"
                                     self.main_df.at[row, 'Vision_OCR'] = json.dumps(
                                         responses_dict[row].get("ocr_data", {}),
                                         ensure_ascii=False
                                     )
                                 else:
                                     self.main_df.at[row, 'Original_Text'] = responses_dict[row]
-                                self.main_df.at[row, 'Text_Toggle'] = "Original Text"
+                                    self.main_df.at[row, 'Text_Toggle'] = "Original Text"
                             elif ai_job == "Correct":
                                 self.main_df.at[row, 'Initial_Draft_Text'] = responses_dict[row]
                                 self.main_df.at[row, 'Text_Toggle'] = "Initial Draft"                            
@@ -2657,15 +2945,17 @@ class App(TkinterDnD.Tk):
                             error_count += 1
                         else:
                             if ai_job == "HTR":
-                                if is_vision_engine and isinstance(response, dict):
-                                    self.main_df.at[index, 'Original_Text'] = response.get("text", "")
+                                if is_ocr_engine and isinstance(response, dict):
+                                    if not self.main_df.at[index, 'Original_Text']:
+                                        self.main_df.at[index, 'Original_Text'] = response.get("text", "")
+                                        self.main_df.at[index, 'Text_Toggle'] = "Original Text"
                                     self.main_df.at[index, 'Vision_OCR'] = json.dumps(
                                         response.get("ocr_data", {}),
                                         ensure_ascii=False
                                     )
                                 else:
                                     self.main_df.at[index, 'Original_Text'] = response
-                                self.main_df.at[index, 'Text_Toggle'] = "Original Text"
+                                    self.main_df.at[index, 'Text_Toggle'] = "Original Text"
                             elif ai_job == "Correct":
                                 self.main_df.at[index, 'Initial_Draft_Text'] = response
                                 self.main_df.at[index, 'Text_Toggle'] = "Initial Draft"
@@ -2694,6 +2984,36 @@ class App(TkinterDnD.Tk):
             self.ai_function(all_or_one_flag=all_or_one_flag, ai_job="HTR")
         finally:
             self.HTR_model = previous_model
+
+    def run_tesseract_ocr(self, all_or_one_flag="All Pages"):
+        previous_model = self.HTR_model
+        try:
+            self.HTR_model = "tesseract-ocr"
+            self.ai_function(all_or_one_flag=all_or_one_flag, ai_job="HTR")
+        finally:
+            self.HTR_model = previous_model
+
+    def run_ocr_htr_workflow(self, all_or_one_flag="All Pages"):
+        if self.main_df.empty:
+            messagebox.showwarning("No Images", "No images are available for processing.")
+            return
+
+        self.append_log("Starting OCR + HTR workflow (Tesseract -> Gemini).")
+        self.set_status_message("Running Tesseract OCR...")
+        self.run_tesseract_ocr(all_or_one_flag=all_or_one_flag)
+        self.append_log("Tesseract OCR completed.")
+
+        previous_model = self.HTR_model
+        try:
+            self.HTR_model = "gemini-3-pro-preview"
+            self.set_status_message("Running Gemini HTR...")
+            self.ai_function(all_or_one_flag=all_or_one_flag, ai_job="HTR")
+        finally:
+            self.HTR_model = previous_model
+
+        self.set_status_message("hOCR is ready to export.")
+        self.append_log("Gemini HTR completed.")
+        self.append_log("hOCR is ready to save: File -> Export hOCR (Aligned Transcript).")
 
 # API Calls to OpenAI, Google, and Anthropic to process text and images for transcription and analysis
 
@@ -2809,6 +3129,66 @@ class App(TkinterDnD.Tk):
                 continue
 
         return "Error", index
+
+    def send_to_tesseract_ocr(self, image_path, index):
+        if not image_path or not os.path.exists(image_path):
+            return "Error", index
+
+        try:
+            with Image.open(image_path) as img:
+                ocr_payload = self.extract_tesseract_ocr_data(img)
+        except TesseractNotFoundError:
+            messagebox.showwarning(
+                "Tesseract Not Found",
+                "Tesseract OCR is not installed or not on your PATH. Please install Tesseract to use this option."
+            )
+            return "Error", index
+        except Exception as e:
+            print(f"Tesseract OCR error: {e}")
+            return "Error", index
+
+        return {
+            "text": ocr_payload.get("text", ""),
+            "ocr_data": ocr_payload
+        }, index
+
+    def extract_tesseract_ocr_data(self, image):
+        image_width, image_height = image.size
+        data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+
+        lines = []
+        current_key = None
+        current_words = []
+
+        for i in range(len(data.get("text", []))):
+            text = (data["text"][i] or "").strip()
+            if not text:
+                continue
+            key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+            if current_key is None:
+                current_key = key
+            if key != current_key and current_words:
+                lines.append(self.build_vision_line(current_words))
+                current_words = []
+                current_key = key
+
+            left = int(data["left"][i])
+            top = int(data["top"][i])
+            width = int(data["width"][i])
+            height = int(data["height"][i])
+            bbox = [left, top, left + width, top + height]
+            current_words.append({"text": text, "bbox": bbox})
+
+        if current_words:
+            lines.append(self.build_vision_line(current_words))
+
+        full_text = "\n".join(line.get("text", "") for line in lines).strip()
+
+        return {
+            "text": full_text,
+            "lines": lines,
+            "image_size": {"width": image_width, "height": image_height}
+        }
 
     def extract_vision_ocr_data(self, response, image_path):
         lines = []
