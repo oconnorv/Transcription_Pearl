@@ -4,7 +4,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 import pandas as pd
 import fitz, re, base64, os, shutil, time, asyncio, string, json
 from PIL import Image, ImageTk, ImageOps
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime
 from pathlib import Path
 import html
@@ -110,6 +110,7 @@ class App(TkinterDnD.Tk):
 
         self.bottom_frame = tk.Frame(self)
         self.bottom_frame.grid_rowconfigure(0, weight=1)
+        self.bottom_frame.grid_rowconfigure(1, weight=0)
         self.bottom_frame.grid(row=2, column=0, sticky="nsew")
 
         self.bottom_frame.grid_columnconfigure(0, weight=1)
@@ -134,6 +135,10 @@ class App(TkinterDnD.Tk):
         textbox_frame.grid_rowconfigure(0, weight=1)
         textbox_frame.grid_rowconfigure(1, weight=1)
         textbox_frame.grid_rowconfigure(2, weight=1)
+
+        self.status_var = tk.StringVar(value="")
+        self.status_label = ttk.Label(self.bottom_frame, textvariable=self.status_var, style="Status.TLabel", anchor="w")
+        self.status_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))
        
         # Initialize initial settings 
         self.initialize_temp_directory()
@@ -155,6 +160,7 @@ class App(TkinterDnD.Tk):
         style.configure("ToolbarHint.TLabel", background="#f5f6f8", foreground="#6b7280", font=("Arial", 10))
         style.configure("Primary.TButton", padding=(10, 6))
         style.configure("Secondary.TButton", padding=(10, 6))
+        style.configure("Status.TLabel", foreground="#1f2937")
 
     def create_menus(self):
         self.menu_bar = tk.Menu(self)
@@ -1018,6 +1024,21 @@ class App(TkinterDnD.Tk):
             justify="center"
         )
         self.image_display.config(scrollregion=self.image_display.bbox("all"))
+
+    def set_status_message(self, message):
+        self.status_var.set(message)
+        self.process_ui_events()
+
+    def clear_status_message(self):
+        self.status_var.set("")
+        self.process_ui_events()
+
+    def process_ui_events(self):
+        try:
+            self.update_idletasks()
+            self.update()
+        except tk.TclError:
+            pass
         
     def create_new_project(self):
         if not messagebox.askyesno("New Project", "Creating a new project will reset the current application state. This action cannot be undone. Are you sure you want to proceed?"):
@@ -2231,6 +2252,8 @@ class App(TkinterDnD.Tk):
         return progress_window, progress_bar, progress_label
 
     def update_progress(self, progress_bar, progress_label, processed_rows, total_rows):
+        if not progress_bar or not progress_label:
+            return
         # Calculate the progress percentage
         if total_rows > 0:
             progress = (processed_rows / total_rows) * 100
@@ -2238,11 +2261,12 @@ class App(TkinterDnD.Tk):
             progress_label.config(text=f"{progress:.2f}%")
         
         # Update the progress bar and label
-        progress_bar.update()
-        progress_label.update()
-    
+        self.process_ui_events()
+
     def close_progress_window(self, progress_window):
         # Close the progress window
+        if progress_window is None:
+            return
         progress_window.destroy()
 
 # Find and Replace Functions
@@ -2489,12 +2513,17 @@ class App(TkinterDnD.Tk):
         futures_to_index = {} # Store the futures with their row index
         processed_rows = 0 # Initialize the number of processed rows
 
+        progress_window = None
+        progress_bar = None
+        progress_label = None
+        use_status_message = ai_job == "HTR"
+
         if all_or_one_flag == "Current Page": # Process the current page only
             total_rows = 1
             row = self.page_counter
             batch_df = self.main_df.loc[[row]]
             if ai_job == "HTR":
-                progress_window, progress_bar, progress_label = self.create_progress_window("Applying HTR to Current Page...")
+                self.set_status_message("Handwriting text recognition is running on the current page...")
             elif ai_job == "Correct":
                 progress_window, progress_bar, progress_label = self.create_progress_window("Correcting Current Page...")
 
@@ -2502,18 +2531,22 @@ class App(TkinterDnD.Tk):
             batch_df = self.main_df[self.main_df['Image_Path'].notna() & (self.main_df['Image_Path'] != '')]
             total_rows = len(batch_df)
             if ai_job == "HTR":
-                progress_window, progress_bar, progress_label = self.create_progress_window("Applying HTR to All Pages...")
+                self.set_status_message("Handwriting text recognition is running on all pages...")
             elif ai_job == "Correct":
                 progress_window, progress_bar, progress_label = self.create_progress_window("Correcting All Pages...")
     
         if total_rows == 0: # Display a warning if no images are available for processing
             self.close_progress_window(progress_window)
+            if use_status_message:
+                self.clear_status_message()
             messagebox.showwarning("No Images", "No images are available for processing.")
             return
         
         selected_engine = self.HTR_model if ai_job == "HTR" else self.correct_model
         if ai_job == "Correct" and selected_engine.lower() == "google-vision-ocr":
             self.close_progress_window(progress_window)
+            if use_status_message:
+                self.clear_status_message()
             messagebox.showwarning("Invalid Model", "Google Vision OCR cannot be used for text correction.")
             self.toggle_button_state()
             return
@@ -2559,27 +2592,43 @@ class App(TkinterDnD.Tk):
                         futures_to_index[executor.submit(self.send_to_vision_ocr, image_path, index, api_timeout=80)] = index
 
             try:
-                for future in as_completed(futures_to_index):
-                    try:
-                        result = future.result()
-                        if result and len(result) == 2: # Check if the result is valid; the result should be a tuple with two elements
-                            response, index = future.result()  # Unpack the response and row index
-                            responses_dict[index] = response  # Store the response with its row index
-                            processed_rows += 1
-                            self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
-                        else:
-                            responses_dict[index] = ""  # Store an empty string if the response is invalid
-                            processed_rows += 1
-                            self.error_logging(f"HTR Function: An error occurred while processing row {futures_to_index[future]}")
+                pending_futures = set(futures_to_index)
+                while pending_futures:
+                    done, pending_futures = wait(pending_futures, timeout=0.1)
+                    if not done:
+                        self.process_ui_events()
+                        continue
 
-                    except Exception as e:
-                        responses_dict[index] = ""  # Store an empty string if an error occurs
-                        # Use a messagebox to display an error
-                        messagebox.showerror("Error", f"An error occurred while processing row {futures_to_index[future]}: {e}")
-                        self.error_logging(f"HTR Function: An error occurred while processing row {futures_to_index[future]}: {e}")   
+                    for future in done:
+                        row_index = futures_to_index.get(future)
+                        try:
+                            result = future.result()
+                            if result and len(result) == 2: # Check if the result is valid; the result should be a tuple with two elements
+                                response, index = result  # Unpack the response and row index
+                                responses_dict[index] = response  # Store the response with its row index
+                                processed_rows += 1
+                                self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
+                            else:
+                                if row_index is not None:
+                                    responses_dict[row_index] = ""  # Store an empty string if the response is invalid
+                                processed_rows += 1
+                                if row_index is not None:
+                                    self.error_logging(f"HTR Function: An error occurred while processing row {row_index}")
+
+                        except Exception as e:
+                            if row_index is not None:
+                                responses_dict[row_index] = ""  # Store an empty string if an error occurs
+                            # Use a messagebox to display an error
+                            messagebox.showerror("Error", f"An error occurred while processing row {row_index}: {e}")
+                            if row_index is not None:
+                                self.error_logging(f"HTR Function: An error occurred while processing row {row_index}: {e}")
+
+                    self.process_ui_events()
 
             finally:
                 self.close_progress_window(progress_window)
+                if use_status_message:
+                    self.clear_status_message()
 
                 # Process the data from the futures that completed successfully
                 error_count = 0
