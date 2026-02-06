@@ -2183,11 +2183,15 @@ class App(TkinterDnD.Tk):
 
         pages = []
         missing_count = 0
+        missing_structure_count = 0
 
         for index, row in self.main_df.iterrows():
             ocr_data = self.parse_vision_ocr_data(row.get("Vision_OCR", ""))
             if not ocr_data:
                 missing_count += 1
+                continue
+            if not self.has_hocr_content(ocr_data.get("lines", [])):
+                missing_structure_count += 1
                 continue
 
             pages.append({
@@ -2216,10 +2220,18 @@ class App(TkinterDnD.Tk):
 
         self.toggle_button_state()
 
-        if missing_count > 0:
+        if missing_count > 0 or missing_structure_count > 0:
             messagebox.showwarning(
                 "Missing Vision OCR Data",
-                f"hOCR export completed, but {missing_count} page(s) did not have Vision OCR data."
+                "hOCR export completed, but "
+                + " ".join(
+                    warning for warning in [
+                        f"{missing_count} page(s) did not have Vision OCR data."
+                        if missing_count > 0 else "",
+                        f"{missing_structure_count} page(s) lacked word-level OCR data."
+                        if missing_structure_count > 0 else ""
+                    ] if warning
+                )
             )
 
     def manual_export_aligned_hocr(self):
@@ -2238,6 +2250,7 @@ class App(TkinterDnD.Tk):
         pages = []
         missing_count = 0
         missing_text_count = 0
+        missing_structure_count = 0
 
         for index, row in self.main_df.iterrows():
             ocr_data = self.parse_vision_ocr_data(row.get("Vision_OCR", ""))
@@ -2251,6 +2264,9 @@ class App(TkinterDnD.Tk):
                 continue
 
             aligned_lines = self.align_transcript_to_ocr(ocr_data, transcript_text)
+            if not self.has_hocr_content(aligned_lines):
+                missing_structure_count += 1
+                continue
 
             pages.append({
                 "page_number": index + 1,
@@ -2284,6 +2300,8 @@ class App(TkinterDnD.Tk):
             warnings.append(f"{missing_count} page(s) did not have Vision OCR data.")
         if missing_text_count > 0:
             warnings.append(f"{missing_text_count} page(s) did not have transcript text to align.")
+        if missing_structure_count > 0:
+            warnings.append(f"{missing_structure_count} page(s) lacked word-level OCR data.")
         if warnings:
             messagebox.showwarning(
                 "Aligned hOCR Export Warnings",
@@ -2326,6 +2344,14 @@ class App(TkinterDnD.Tk):
     def validate_hocr_document(self, hocr_html):
         required_markers = ("class='ocr_page'", "class='ocr_line'", "class='ocrx_word'")
         return all(marker in hocr_html for marker in required_markers)
+
+    def has_hocr_content(self, lines):
+        if not lines:
+            return False
+        for line in lines:
+            if isinstance(line, dict) and line.get("words"):
+                return True
+        return False
 
     def build_hocr_page(self, page):
         ocr_data = page.get("ocr_data", {})
