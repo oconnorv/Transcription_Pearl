@@ -2878,14 +2878,16 @@ class App(TkinterDnD.Tk):
                         else:                           
                             if ai_job == "HTR":
                                 if is_vision_engine and isinstance(responses_dict[row], dict):
-                                    self.main_df.at[row, 'Original_Text'] = responses_dict[row].get("text", "")
+                                    if not self.main_df.at[row, 'Original_Text']:
+                                        self.main_df.at[row, 'Original_Text'] = responses_dict[row].get("text", "")
+                                        self.main_df.at[row, 'Text_Toggle'] = "Original Text"
                                     self.main_df.at[row, 'Vision_OCR'] = json.dumps(
                                         responses_dict[row].get("ocr_data", {}),
                                         ensure_ascii=False
                                     )
                                 else:
                                     self.main_df.at[row, 'Original_Text'] = responses_dict[row]
-                                self.main_df.at[row, 'Text_Toggle'] = "Original Text"
+                                    self.main_df.at[row, 'Text_Toggle'] = "Original Text"
                             elif ai_job == "Correct":
                                 self.main_df.at[row, 'Initial_Draft_Text'] = responses_dict[row]
                                 self.main_df.at[row, 'Text_Toggle'] = "Initial Draft"                            
@@ -2896,14 +2898,16 @@ class App(TkinterDnD.Tk):
                         else:
                             if ai_job == "HTR":
                                 if is_vision_engine and isinstance(response, dict):
-                                    self.main_df.at[index, 'Original_Text'] = response.get("text", "")
+                                    if not self.main_df.at[index, 'Original_Text']:
+                                        self.main_df.at[index, 'Original_Text'] = response.get("text", "")
+                                        self.main_df.at[index, 'Text_Toggle'] = "Original Text"
                                     self.main_df.at[index, 'Vision_OCR'] = json.dumps(
                                         response.get("ocr_data", {}),
                                         ensure_ascii=False
                                     )
                                 else:
                                     self.main_df.at[index, 'Original_Text'] = response
-                                self.main_df.at[index, 'Text_Toggle'] = "Original Text"
+                                    self.main_df.at[index, 'Text_Toggle'] = "Original Text"
                             elif ai_job == "Correct":
                                 self.main_df.at[index, 'Initial_Draft_Text'] = response
                                 self.main_df.at[index, 'Text_Toggle'] = "Initial Draft"
