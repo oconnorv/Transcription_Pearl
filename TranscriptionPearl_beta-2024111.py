@@ -2838,6 +2838,7 @@ class App(TkinterDnD.Tk):
         self.update_progress(progress_bar, progress_label, processed_rows, total_rows) # Update the progress bar and label
 
         # Process the images in batches
+        tesseract_missing = False
         with ThreadPoolExecutor(max_workers=batch_size) as executor:
             for i in range(0, total_rows, batch_size):
                 batch_df_subset = batch_df.iloc[i:i+batch_size]
@@ -2891,9 +2892,17 @@ class App(TkinterDnD.Tk):
                             result = future.result()
                             if result and len(result) == 2: # Check if the result is valid; the result should be a tuple with two elements
                                 response, index = result  # Unpack the response and row index
-                                responses_dict[index] = response  # Store the response with its row index
-                                processed_rows += 1
-                                self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
+                                if isinstance(response, dict) and response.get("error") == "tesseract_not_found":
+                                    tesseract_missing = True
+                                    responses_dict[index] = "Error"
+                                    processed_rows += 1
+                                    self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
+                                    if row_index is not None:
+                                        self.error_logging("HTR Function: Tesseract OCR is not installed or on PATH.")
+                                else:
+                                    responses_dict[index] = response  # Store the response with its row index
+                                    processed_rows += 1
+                                    self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
                             else:
                                 if row_index is not None:
                                     responses_dict[row_index] = ""  # Store an empty string if the response is invalid
@@ -2915,6 +2924,11 @@ class App(TkinterDnD.Tk):
                 self.close_progress_window(progress_window)
                 if use_status_message:
                     self.clear_status_message()
+                if tesseract_missing:
+                    messagebox.showwarning(
+                        "Tesseract Not Found",
+                        "Tesseract OCR is not installed or not on your PATH. Please install Tesseract to use this option."
+                    )
 
                 # Process the data from the futures that completed successfully
                 error_count = 0
@@ -3138,11 +3152,7 @@ class App(TkinterDnD.Tk):
             with Image.open(image_path) as img:
                 ocr_payload = self.extract_tesseract_ocr_data(img)
         except TesseractNotFoundError:
-            messagebox.showwarning(
-                "Tesseract Not Found",
-                "Tesseract OCR is not installed or not on your PATH. Please install Tesseract to use this option."
-            )
-            return "Error", index
+            return {"error": "tesseract_not_found"}, index
         except Exception as e:
             print(f"Tesseract OCR error: {e}")
             return "Error", index
