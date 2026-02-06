@@ -2,12 +2,13 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, simpledialog
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import pandas as pd
-import fitz, re, base64, os, shutil, time, asyncio, string, json
+import fitz, re, base64, os, shutil, time, asyncio, string, json, copy
 from PIL import Image, ImageTk, ImageOps
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime
 from pathlib import Path
 import html
+from rapidfuzz.distance import Levenshtein
 
 # # Import Local Scripts
 from util.subs.ImageSplitter import ImageSplitter
@@ -63,6 +64,8 @@ class App(TkinterDnD.Tk):
         self.top_frame.grid_columnconfigure(3, weight=0)
         self.top_frame.grid_columnconfigure(4, weight=0)
         self.top_frame.grid_columnconfigure(5, weight=0)
+        self.top_frame.grid_columnconfigure(6, weight=0)
+        self.top_frame.grid_columnconfigure(7, weight=0)
 
         text_label = tk.Label(self.top_frame, text="Displayed Text:")
         text_label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
@@ -70,26 +73,40 @@ class App(TkinterDnD.Tk):
         self.text_type_label = tk.Label(self.top_frame, text="None")
         self.text_type_label.grid(row=0, column=1, sticky="w", padx=5, pady=5)
 
+        self.text_toggle_var = tk.StringVar(value="Original Text")
+        self.text_toggle_dropdown = ttk.Combobox(
+            self.top_frame,
+            textvariable=self.text_toggle_var,
+            values=["Original Text", "Initial Draft", "Final Draft"],
+            state="readonly",
+            width=16
+        )
+        self.text_toggle_dropdown.grid(row=0, column=2, sticky="w", padx=5, pady=5)
+        self.text_toggle_dropdown.bind(
+            "<<ComboboxSelected>>",
+            lambda event: self.set_text_toggle_for_current_page(self.text_toggle_var.get())
+        )
+
         self.button1 = tk.Button(self.top_frame, text="<<", command=lambda: self.navigate_images(-2))
-        self.button1.grid(row=0, column=2, sticky="e", padx=5, pady=5)
+        self.button1.grid(row=0, column=3, sticky="e", padx=5, pady=5)
 
         self.button2 = tk.Button(self.top_frame, text="<", command=lambda: self.navigate_images(-1))
-        self.button2.grid(row=0, column=3, sticky="e", padx=5, pady=5)
+        self.button2.grid(row=0, column=4, sticky="e", padx=5, pady=5)
 
         self.page_counter_var = tk.StringVar()
         self.page_counter_var.set("0 / 0")
 
         page_counter_label = tk.Label(self.top_frame, textvariable=self.page_counter_var)
-        page_counter_label.grid(row=0, column=4, sticky="e", padx=5, pady=5)
+        page_counter_label.grid(row=0, column=5, sticky="e", padx=5, pady=5)
 
         self.button4 = tk.Button(self.top_frame, text=">", command=lambda: self.navigate_images(1))
-        self.button4.grid(row=0, column=5, sticky="e", padx=5, pady=5)
+        self.button4.grid(row=0, column=6, sticky="e", padx=5, pady=5)
 
         self.button5 = tk.Button(self.top_frame, text=">>", command=lambda: self.navigate_images(2))
-        self.button5.grid(row=0, column=6, sticky="e", padx=5, pady=5)
+        self.button5.grid(row=0, column=7, sticky="e", padx=5, pady=5)
 
         self.action_frame = ttk.Frame(self.top_frame, style="Toolbar.TFrame")
-        self.action_frame.grid(row=1, column=0, columnspan=7, sticky="ew", padx=8, pady=(0, 8))
+        self.action_frame.grid(row=1, column=0, columnspan=8, sticky="ew", padx=8, pady=(0, 8))
         self.action_frame.grid_columnconfigure(3, weight=1)
 
         ttk.Label(self.action_frame, text="Quick Import:", style="Toolbar.TLabel").grid(row=0, column=0, padx=(0, 8))
@@ -189,6 +206,7 @@ class App(TkinterDnD.Tk):
 
         self.file_menu.add_command(label="Export", command=self.manual_export)
         self.file_menu.add_command(label="Export hOCR (Vision OCR)", command=self.manual_export_hocr)
+        self.file_menu.add_command(label="Export hOCR (Aligned Transcript)", command=self.manual_export_aligned_hocr)
 
         self.file_menu.add_separator()
 
@@ -1407,6 +1425,26 @@ class App(TkinterDnD.Tk):
             self.text_type_label.config(text="No Text")
 
         return text
+
+    def set_text_toggle_for_current_page(self, selection):
+        if self.main_df.empty:
+            return
+        index = self.page_counter
+        if index >= len(self.main_df):
+            return
+        self.main_df.at[index, 'Text_Toggle'] = selection
+        self.load_text()
+
+    def sync_text_toggle_ui(self, index_no):
+        if not hasattr(self, "text_toggle_var"):
+            return
+        if self.main_df.empty or index_no >= len(self.main_df):
+            self.text_toggle_var.set("Original Text")
+            return
+        current_toggle = self.main_df.loc[index_no, 'Text_Toggle']
+        if current_toggle not in ("Original Text", "Initial Draft", "Final Draft"):
+            current_toggle = "Original Text"
+        self.text_toggle_var.set(current_toggle)
     
     def toggle_button_state(self):
                 
@@ -1767,6 +1805,7 @@ class App(TkinterDnD.Tk):
              
     def load_text(self):
         index = self.page_counter
+        self.sync_text_toggle_ui(index)
 
         text = self.find_right_text(index)
 
@@ -2148,6 +2187,69 @@ class App(TkinterDnD.Tk):
                 f"hOCR export completed, but {missing_count} page(s) did not have Vision OCR data."
             )
 
+    def manual_export_aligned_hocr(self):
+        self.toggle_button_state()
+
+        export_path = filedialog.asksaveasfilename(
+            defaultextension=".html",
+            filetypes=[("hOCR HTML files", "*.html"), ("HTML files", "*.html")],
+            title="Save Aligned hOCR As"
+        )
+
+        if not export_path:
+            self.toggle_button_state()
+            return
+
+        pages = []
+        missing_count = 0
+        missing_text_count = 0
+
+        for index, row in self.main_df.iterrows():
+            ocr_data = self.parse_vision_ocr_data(row.get("Vision_OCR", ""))
+            if not ocr_data:
+                missing_count += 1
+                continue
+
+            transcript_text = self.find_right_text(index)
+            if not transcript_text.strip():
+                missing_text_count += 1
+                continue
+
+            aligned_lines = self.align_transcript_to_ocr(ocr_data, transcript_text)
+
+            pages.append({
+                "page_number": index + 1,
+                "page_label": row.get("Page", f"page_{index + 1}"),
+                "image_path": row.get("Image_Path", ""),
+                "ocr_data": ocr_data,
+                "aligned_lines": aligned_lines
+            })
+
+        if not pages:
+            self.toggle_button_state()
+            messagebox.showwarning(
+                "No Aligned hOCR Data",
+                "No pages had both Vision OCR data and transcript text. Run Google Vision OCR and ensure transcript text exists."
+            )
+            return
+
+        hocr_html = self.build_hocr_document(pages)
+        with open(export_path, "w", encoding="utf-8") as f:
+            f.write(hocr_html)
+
+        self.toggle_button_state()
+
+        warnings = []
+        if missing_count > 0:
+            warnings.append(f"{missing_count} page(s) did not have Vision OCR data.")
+        if missing_text_count > 0:
+            warnings.append(f"{missing_text_count} page(s) did not have transcript text to align.")
+        if warnings:
+            messagebox.showwarning(
+                "Aligned hOCR Export Warnings",
+                "Aligned hOCR export completed, but " + " ".join(warnings)
+            )
+
     def parse_vision_ocr_data(self, vision_ocr_value):
         if isinstance(vision_ocr_value, dict):
             return vision_ocr_value
@@ -2188,7 +2290,8 @@ class App(TkinterDnD.Tk):
         page_id = page.get("page_label", f"page_{page.get('page_number', 1)}")
 
         page_lines = []
-        for line_index, line in enumerate(ocr_data.get("lines", []), start=1):
+        lines = page.get("aligned_lines", ocr_data.get("lines", []))
+        for line_index, line in enumerate(lines, start=1):
             line_bbox = self.format_bbox(line.get("bbox", [0, 0, 0, 0]))
             word_spans = []
             for word_index, word in enumerate(line.get("words", []), start=1):
@@ -2216,6 +2319,141 @@ class App(TkinterDnD.Tk):
         if not bbox or len(bbox) != 4:
             return "0 0 0 0"
         return " ".join(str(int(value)) for value in bbox)
+
+    def align_transcript_to_ocr(self, ocr_data, transcript_text):
+        aligned_lines = copy.deepcopy(ocr_data.get("lines", []))
+        ocr_words = []
+        word_refs = []
+        for line_index, line in enumerate(aligned_lines):
+            for word_index, word in enumerate(line.get("words", [])):
+                ocr_words.append(word.get("text", ""))
+                word_refs.append((line_index, word_index))
+
+        transcript_tokens = self.tokenize_transcript(transcript_text)
+        if not ocr_words or not transcript_tokens:
+            return aligned_lines
+
+        aligned_tokens = self.align_tokens(ocr_words, transcript_tokens)
+        if len(aligned_tokens) != len(ocr_words):
+            aligned_tokens = self.pad_alignment(ocr_words, aligned_tokens)
+
+        for token, (line_index, word_index) in zip(aligned_tokens, word_refs):
+            aligned_lines[line_index]["words"][word_index]["text"] = token
+
+        return aligned_lines
+
+    def pad_alignment(self, ocr_words, aligned_tokens):
+        if len(aligned_tokens) < len(ocr_words):
+            aligned_tokens.extend(ocr_words[len(aligned_tokens):])
+        elif len(aligned_tokens) > len(ocr_words):
+            aligned_tokens = aligned_tokens[:len(ocr_words)]
+        return aligned_tokens
+
+    def tokenize_transcript(self, text):
+        return re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE)
+
+    def normalize_token(self, token):
+        return re.sub(r"[^\w]", "", token.lower())
+
+    def align_tokens(self, ocr_tokens, transcript_tokens):
+        normalized_ocr = [self.normalize_token(token) for token in ocr_tokens]
+        normalized_transcript = [self.normalize_token(token) for token in transcript_tokens]
+
+        ocr_len = len(normalized_ocr)
+        transcript_len = len(normalized_transcript)
+        if ocr_len == 0:
+            return []
+
+        band = max(50, abs(ocr_len - transcript_len) + 50)
+        gap_penalty = -0.45
+
+        prev_scores = [float("-inf")] * (transcript_len + 1)
+        prev_scores[0] = 0.0
+        for j in range(1, transcript_len + 1):
+            prev_scores[j] = prev_scores[j - 1] + gap_penalty
+
+        backpointers = [{} for _ in range(ocr_len + 1)]
+
+        for i in range(1, ocr_len + 1):
+            curr_scores = [float("-inf")] * (transcript_len + 1)
+            start = max(1, i - band)
+            end = min(transcript_len, i + band)
+
+            curr_scores[0] = prev_scores[0] + gap_penalty
+            backpointers[i][0] = (i - 1, 0, "delete")
+
+            for j in range(start, end + 1):
+                similarity = Levenshtein.normalized_similarity(
+                    normalized_ocr[i - 1],
+                    normalized_transcript[j - 1]
+                ) / 100.0
+                score_match = prev_scores[j - 1] + similarity
+                score_delete = prev_scores[j] + gap_penalty
+                score_insert = curr_scores[j - 1] + gap_penalty
+
+                if score_match >= score_delete and score_match >= score_insert:
+                    curr_scores[j] = score_match
+                    backpointers[i][j] = (i - 1, j - 1, "match")
+                elif score_delete >= score_insert:
+                    curr_scores[j] = score_delete
+                    backpointers[i][j] = (i - 1, j, "delete")
+                else:
+                    curr_scores[j] = score_insert
+                    backpointers[i][j] = (i, j - 1, "insert")
+
+            prev_scores = curr_scores
+
+        steps = []
+        i, j = ocr_len, transcript_len
+
+        while i > 0 or j > 0:
+            if j not in backpointers[i]:
+                break
+            prev_i, prev_j, action = backpointers[i][j]
+            if action == "match":
+                steps.append(("match", ocr_tokens[i - 1], transcript_tokens[j - 1]))
+            elif action == "delete":
+                steps.append(("delete", ocr_tokens[i - 1], None))
+            elif action == "insert":
+                steps.append(("insert", None, transcript_tokens[j - 1]))
+            i, j = prev_i, prev_j
+
+        steps.reverse()
+        aligned = []
+        pending_prefix = []
+        for action, ocr_token, transcript_token in steps:
+            if action == "insert":
+                if aligned:
+                    aligned[-1] = self.append_token(aligned[-1], transcript_token)
+                else:
+                    pending_prefix.append(transcript_token)
+                continue
+
+            token = transcript_token if action == "match" else ocr_token
+            if pending_prefix:
+                token = self.merge_tokens(pending_prefix + [token])
+                pending_prefix = []
+            aligned.append(token)
+
+        if pending_prefix and aligned:
+            aligned[0] = self.merge_tokens(pending_prefix + [aligned[0]])
+
+        return aligned
+
+    def merge_tokens(self, tokens):
+        text = ""
+        for token in tokens:
+            text = self.append_token(text, token)
+        return text
+
+    def append_token(self, base, token):
+        if not base:
+            return token
+        no_space_before = {".", ",", "!", "?", ":", ";", "%", ")", "]", "}", "»", "’", "”"}
+        no_space_after = {"(", "[", "{", "«", "“", "‘"}
+        if token in no_space_before or base.endswith(tuple(no_space_after)):
+            return f"{base}{token}"
+        return f"{base} {token}"
 
 # Routing and Variables Functions
     
@@ -2640,14 +2878,16 @@ class App(TkinterDnD.Tk):
                         else:                           
                             if ai_job == "HTR":
                                 if is_vision_engine and isinstance(responses_dict[row], dict):
-                                    self.main_df.at[row, 'Original_Text'] = responses_dict[row].get("text", "")
+                                    if not self.main_df.at[row, 'Original_Text']:
+                                        self.main_df.at[row, 'Original_Text'] = responses_dict[row].get("text", "")
+                                        self.main_df.at[row, 'Text_Toggle'] = "Original Text"
                                     self.main_df.at[row, 'Vision_OCR'] = json.dumps(
                                         responses_dict[row].get("ocr_data", {}),
                                         ensure_ascii=False
                                     )
                                 else:
                                     self.main_df.at[row, 'Original_Text'] = responses_dict[row]
-                                self.main_df.at[row, 'Text_Toggle'] = "Original Text"
+                                    self.main_df.at[row, 'Text_Toggle'] = "Original Text"
                             elif ai_job == "Correct":
                                 self.main_df.at[row, 'Initial_Draft_Text'] = responses_dict[row]
                                 self.main_df.at[row, 'Text_Toggle'] = "Initial Draft"                            
@@ -2658,14 +2898,16 @@ class App(TkinterDnD.Tk):
                         else:
                             if ai_job == "HTR":
                                 if is_vision_engine and isinstance(response, dict):
-                                    self.main_df.at[index, 'Original_Text'] = response.get("text", "")
+                                    if not self.main_df.at[index, 'Original_Text']:
+                                        self.main_df.at[index, 'Original_Text'] = response.get("text", "")
+                                        self.main_df.at[index, 'Text_Toggle'] = "Original Text"
                                     self.main_df.at[index, 'Vision_OCR'] = json.dumps(
                                         response.get("ocr_data", {}),
                                         ensure_ascii=False
                                     )
                                 else:
                                     self.main_df.at[index, 'Original_Text'] = response
-                                self.main_df.at[index, 'Text_Toggle'] = "Original Text"
+                                    self.main_df.at[index, 'Text_Toggle'] = "Original Text"
                             elif ai_job == "Correct":
                                 self.main_df.at[index, 'Initial_Draft_Text'] = response
                                 self.main_df.at[index, 'Text_Toggle'] = "Initial Draft"
