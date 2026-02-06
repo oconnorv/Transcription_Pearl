@@ -224,9 +224,12 @@ class App(TkinterDnD.Tk):
 
         self.process_menu.add_command(label="Recognize Text on Current Page", command=lambda: self.ai_function(all_or_one_flag="Current Page", ai_job="HTR"))        
         self.process_menu.add_command(label="Recognize Text on All Pages", command=lambda: self.ai_function(all_or_one_flag="All Pages", ai_job="HTR")) 
+        self.process_menu.add_separator()
+        self.process_menu.add_command(label="Run Google Vision OCR on Current Page", command=lambda: self.run_vision_ocr(all_or_one_flag="Current Page"))
+        self.process_menu.add_command(label="Run Google Vision OCR on All Pages", command=lambda: self.run_vision_ocr(all_or_one_flag="All Pages"))
 
         self.process_menu.add_separator()
-
+        
         self.process_menu.add_command(label="Correct Text on Current Page", command=lambda: self.ai_function(all_or_one_flag="Current Page", ai_job="Correct"))
         self.process_menu.add_command(label="Correct Text on All Pages", command=lambda: self.ai_function(all_or_one_flag="All Pages", ai_job="Correct"))
 
@@ -2106,7 +2109,10 @@ class App(TkinterDnD.Tk):
 
         if not pages:
             self.toggle_button_state()
-            messagebox.showwarning("No Vision OCR Data", "No Vision OCR data was found. Run Google Vision OCR first.")
+            messagebox.showwarning(
+                "No Vision OCR Data",
+                "No Vision OCR data was found. Run Google Vision OCR from the Process menu first."
+            )
             return
 
         hocr_html = self.build_hocr_document(pages)
@@ -2624,6 +2630,21 @@ class App(TkinterDnD.Tk):
                         messagebox.showwarning("HTR Error", f"An error occurred while processing the current page.")
                     else:
                         messagebox.showwarning("HTR Errors", f"Errors occurred while processing {error_count} page(s).")
+
+    def run_vision_ocr(self, all_or_one_flag="All Pages"):
+        if not self.google_vision_api_key:
+            messagebox.showwarning(
+                "Missing Google Vision API Key",
+                "Please add your Google Vision API key in Settings before running Vision OCR."
+            )
+            return
+
+        previous_model = self.HTR_model
+        try:
+            self.HTR_model = "google-vision-ocr"
+            self.ai_function(all_or_one_flag=all_or_one_flag, ai_job="HTR")
+        finally:
+            self.HTR_model = previous_model
 
 # API Calls to OpenAI, Google, and Anthropic to process text and images for transcription and analysis
 
