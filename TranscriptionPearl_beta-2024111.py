@@ -64,6 +64,8 @@ class App(TkinterDnD.Tk):
         self.top_frame.grid_columnconfigure(3, weight=0)
         self.top_frame.grid_columnconfigure(4, weight=0)
         self.top_frame.grid_columnconfigure(5, weight=0)
+        self.top_frame.grid_columnconfigure(6, weight=0)
+        self.top_frame.grid_columnconfigure(7, weight=0)
 
         text_label = tk.Label(self.top_frame, text="Displayed Text:")
         text_label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
@@ -71,26 +73,40 @@ class App(TkinterDnD.Tk):
         self.text_type_label = tk.Label(self.top_frame, text="None")
         self.text_type_label.grid(row=0, column=1, sticky="w", padx=5, pady=5)
 
+        self.text_toggle_var = tk.StringVar(value="Original Text")
+        self.text_toggle_dropdown = ttk.Combobox(
+            self.top_frame,
+            textvariable=self.text_toggle_var,
+            values=["Original Text", "Initial Draft", "Final Draft"],
+            state="readonly",
+            width=16
+        )
+        self.text_toggle_dropdown.grid(row=0, column=2, sticky="w", padx=5, pady=5)
+        self.text_toggle_dropdown.bind(
+            "<<ComboboxSelected>>",
+            lambda event: self.set_text_toggle_for_current_page(self.text_toggle_var.get())
+        )
+
         self.button1 = tk.Button(self.top_frame, text="<<", command=lambda: self.navigate_images(-2))
-        self.button1.grid(row=0, column=2, sticky="e", padx=5, pady=5)
+        self.button1.grid(row=0, column=3, sticky="e", padx=5, pady=5)
 
         self.button2 = tk.Button(self.top_frame, text="<", command=lambda: self.navigate_images(-1))
-        self.button2.grid(row=0, column=3, sticky="e", padx=5, pady=5)
+        self.button2.grid(row=0, column=4, sticky="e", padx=5, pady=5)
 
         self.page_counter_var = tk.StringVar()
         self.page_counter_var.set("0 / 0")
 
         page_counter_label = tk.Label(self.top_frame, textvariable=self.page_counter_var)
-        page_counter_label.grid(row=0, column=4, sticky="e", padx=5, pady=5)
+        page_counter_label.grid(row=0, column=5, sticky="e", padx=5, pady=5)
 
         self.button4 = tk.Button(self.top_frame, text=">", command=lambda: self.navigate_images(1))
-        self.button4.grid(row=0, column=5, sticky="e", padx=5, pady=5)
+        self.button4.grid(row=0, column=6, sticky="e", padx=5, pady=5)
 
         self.button5 = tk.Button(self.top_frame, text=">>", command=lambda: self.navigate_images(2))
-        self.button5.grid(row=0, column=6, sticky="e", padx=5, pady=5)
+        self.button5.grid(row=0, column=7, sticky="e", padx=5, pady=5)
 
         self.action_frame = ttk.Frame(self.top_frame, style="Toolbar.TFrame")
-        self.action_frame.grid(row=1, column=0, columnspan=7, sticky="ew", padx=8, pady=(0, 8))
+        self.action_frame.grid(row=1, column=0, columnspan=8, sticky="ew", padx=8, pady=(0, 8))
         self.action_frame.grid_columnconfigure(3, weight=1)
 
         ttk.Label(self.action_frame, text="Quick Import:", style="Toolbar.TLabel").grid(row=0, column=0, padx=(0, 8))
@@ -1409,6 +1425,26 @@ class App(TkinterDnD.Tk):
             self.text_type_label.config(text="No Text")
 
         return text
+
+    def set_text_toggle_for_current_page(self, selection):
+        if self.main_df.empty:
+            return
+        index = self.page_counter
+        if index >= len(self.main_df):
+            return
+        self.main_df.at[index, 'Text_Toggle'] = selection
+        self.load_text()
+
+    def sync_text_toggle_ui(self, index_no):
+        if not hasattr(self, "text_toggle_var"):
+            return
+        if self.main_df.empty or index_no >= len(self.main_df):
+            self.text_toggle_var.set("Original Text")
+            return
+        current_toggle = self.main_df.loc[index_no, 'Text_Toggle']
+        if current_toggle not in ("Original Text", "Initial Draft", "Final Draft"):
+            current_toggle = "Original Text"
+        self.text_toggle_var.set(current_toggle)
     
     def toggle_button_state(self):
                 
@@ -1769,6 +1805,7 @@ class App(TkinterDnD.Tk):
              
     def load_text(self):
         index = self.page_counter
+        self.sync_text_toggle_ui(index)
 
         text = self.find_right_text(index)
 
