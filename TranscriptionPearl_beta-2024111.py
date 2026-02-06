@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, simpledialog
+from tkinter import scrolledtext
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import pandas as pd
 import fitz, re, base64, os, shutil, time, asyncio, string, json, copy
@@ -9,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 import html
 from rapidfuzz.distance import Levenshtein
+import pytesseract
+from pytesseract import TesseractNotFoundError
 
 # # Import Local Scripts
 from util.subs.ImageSplitter import ImageSplitter
@@ -113,7 +116,8 @@ class App(TkinterDnD.Tk):
         ttk.Button(self.action_frame, text="Choose Images", style="Primary.TButton", command=self.open_image_files).grid(row=0, column=1, padx=4)
         ttk.Button(self.action_frame, text="Choose Folder", style="Secondary.TButton", command=lambda: self.open_folder(toggle="Images without Text")).grid(row=0, column=2, padx=4)
         ttk.Button(self.action_frame, text="Import PDF", style="Secondary.TButton", command=self.open_pdf).grid(row=0, column=3, padx=4)
-        ttk.Label(self.action_frame, text="Drag & drop also works.", style="ToolbarHint.TLabel").grid(row=0, column=4, sticky="e", padx=(8, 0))
+        ttk.Button(self.action_frame, text="Run OCR + HTR (Gemini)", style="Secondary.TButton", command=self.run_ocr_htr_workflow).grid(row=0, column=4, padx=4)
+        ttk.Label(self.action_frame, text="Drag & drop also works.", style="ToolbarHint.TLabel").grid(row=0, column=5, sticky="e", padx=(8, 0))
 
         self.main_frame = tk.PanedWindow(self, orient=tk.HORIZONTAL)
         self.main_frame.grid(row=1, column=0, sticky="nsew")
@@ -128,6 +132,7 @@ class App(TkinterDnD.Tk):
         self.bottom_frame = tk.Frame(self)
         self.bottom_frame.grid_rowconfigure(0, weight=1)
         self.bottom_frame.grid_rowconfigure(1, weight=0)
+        self.bottom_frame.grid_rowconfigure(2, weight=0)
         self.bottom_frame.grid(row=2, column=0, sticky="nsew")
 
         self.bottom_frame.grid_columnconfigure(0, weight=1)
@@ -156,6 +161,13 @@ class App(TkinterDnD.Tk):
         self.status_var = tk.StringVar(value="")
         self.status_label = ttk.Label(self.bottom_frame, textvariable=self.status_var, style="Status.TLabel", anchor="w")
         self.status_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))
+
+        log_frame = ttk.Frame(self.bottom_frame)
+        log_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
+        log_frame.grid_columnconfigure(0, weight=1)
+        ttk.Label(log_frame, text="Logs:").grid(row=0, column=0, sticky="w")
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=6, wrap=tk.WORD, state="disabled")
+        self.log_text.grid(row=1, column=0, sticky="nsew")
        
         # Initialize initial settings 
         self.initialize_temp_directory()
@@ -251,6 +263,8 @@ class App(TkinterDnD.Tk):
         self.process_menu.add_separator()
         self.process_menu.add_command(label="Run Google Vision OCR on Current Page", command=lambda: self.run_vision_ocr(all_or_one_flag="Current Page"))
         self.process_menu.add_command(label="Run Google Vision OCR on All Pages", command=lambda: self.run_vision_ocr(all_or_one_flag="All Pages"))
+        self.process_menu.add_command(label="Run Tesseract OCR on Current Page", command=lambda: self.run_tesseract_ocr(all_or_one_flag="Current Page"))
+        self.process_menu.add_command(label="Run Tesseract OCR on All Pages", command=lambda: self.run_tesseract_ocr(all_or_one_flag="All Pages"))
 
         self.process_menu.add_separator()
         
@@ -372,7 +386,8 @@ class App(TkinterDnD.Tk):
             "claude-opus-4-5",
             "gemini-3-pro-preview",
             "gemini-3-flash-preview",
-            "google-vision-ocr"
+            "google-vision-ocr",
+            "tesseract-ocr"
         ]
 
         # Check if settings file exists and load it
@@ -693,7 +708,8 @@ class App(TkinterDnD.Tk):
             "claude-opus-4-5",
             "gemini-3-pro-preview",
             "gemini-3-flash-preview",
-            "google-vision-ocr"
+            "google-vision-ocr",
+            "tesseract-ocr"
         ]
 
         self.openai_api_key = ""
@@ -1050,6 +1066,20 @@ class App(TkinterDnD.Tk):
     def clear_status_message(self):
         self.status_var.set("")
         self.process_ui_events()
+
+    def append_log(self, message):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_message = f"[{timestamp}] {message}\n"
+
+        def _append():
+            if not hasattr(self, "log_text"):
+                return
+            self.log_text.config(state="normal")
+            self.log_text.insert(tk.END, log_message)
+            self.log_text.see(tk.END)
+            self.log_text.config(state="disabled")
+
+        self.after(0, _append)
 
     def process_ui_events(self):
         try:
@@ -2142,8 +2172,8 @@ class App(TkinterDnD.Tk):
         self.toggle_button_state()
 
         export_path = filedialog.asksaveasfilename(
-            defaultextension=".html",
-            filetypes=[("hOCR HTML files", "*.html"), ("HTML files", "*.html")],
+            defaultextension=".hocr",
+            filetypes=[("hOCR files", "*.hocr"), ("HTML files", "*.html")],
             title="Save hOCR As"
         )
 
@@ -2176,6 +2206,11 @@ class App(TkinterDnD.Tk):
             return
 
         hocr_html = self.build_hocr_document(pages)
+        if not self.validate_hocr_document(hocr_html):
+            messagebox.showwarning(
+                "hOCR Validation Warning",
+                "The generated file may not fully comply with hOCR expectations."
+            )
         with open(export_path, "w", encoding="utf-8") as f:
             f.write(hocr_html)
 
@@ -2191,8 +2226,8 @@ class App(TkinterDnD.Tk):
         self.toggle_button_state()
 
         export_path = filedialog.asksaveasfilename(
-            defaultextension=".html",
-            filetypes=[("hOCR HTML files", "*.html"), ("HTML files", "*.html")],
+            defaultextension=".hocr",
+            filetypes=[("hOCR files", "*.hocr"), ("HTML files", "*.html")],
             title="Save Aligned hOCR As"
         )
 
@@ -2234,6 +2269,11 @@ class App(TkinterDnD.Tk):
             return
 
         hocr_html = self.build_hocr_document(pages)
+        if not self.validate_hocr_document(hocr_html):
+            messagebox.showwarning(
+                "hOCR Validation Warning",
+                "The generated file may not fully comply with hOCR expectations."
+            )
         with open(export_path, "w", encoding="utf-8") as f:
             f.write(hocr_html)
 
@@ -2273,6 +2313,8 @@ class App(TkinterDnD.Tk):
             "<html>\n"
             "<head>\n"
             "  <meta charset=\"utf-8\" />\n"
+            "  <meta name=\"ocr-system\" content=\"Transcription Pearl\" />\n"
+            "  <meta name=\"ocr-capabilities\" content=\"ocr_page ocr_line ocrx_word\" />\n"
             "  <title>hOCR Export</title>\n"
             "</head>\n"
             "<body>\n"
@@ -2280,6 +2322,10 @@ class App(TkinterDnD.Tk):
             "</body>\n"
             "</html>\n"
         )
+
+    def validate_hocr_document(self, hocr_html):
+        required_markers = ("class='ocr_page'", "class='ocr_line'", "class='ocrx_word'")
+        return all(marker in hocr_html for marker in required_markers)
 
     def build_hocr_page(self, page):
         ocr_data = page.get("ocr_data", {})
@@ -2781,17 +2827,18 @@ class App(TkinterDnD.Tk):
             return
         
         selected_engine = self.HTR_model if ai_job == "HTR" else self.correct_model
-        if ai_job == "Correct" and selected_engine.lower() == "google-vision-ocr":
+        if ai_job == "Correct" and selected_engine.lower() in ("google-vision-ocr", "tesseract-ocr"):
             self.close_progress_window(progress_window)
             if use_status_message:
                 self.clear_status_message()
-            messagebox.showwarning("Invalid Model", "Google Vision OCR cannot be used for text correction.")
+            messagebox.showwarning("Invalid Model", "OCR engines cannot be used for text correction.")
             self.toggle_button_state()
             return
 
         self.update_progress(progress_bar, progress_label, processed_rows, total_rows) # Update the progress bar and label
 
         # Process the images in batches
+        tesseract_missing = False
         with ThreadPoolExecutor(max_workers=batch_size) as executor:
             for i in range(0, total_rows, batch_size):
                 batch_df_subset = batch_df.iloc[i:i+batch_size]
@@ -2828,6 +2875,8 @@ class App(TkinterDnD.Tk):
                         futures_to_index[executor.submit(asyncio.run, self.run_send_to_claude_api(system_prompt, user_prompt, temp, image_base64, text_to_process, val_text, engine, index, False, api_timeout=80))] = index
                     elif engine.lower() == "google-vision-ocr":
                         futures_to_index[executor.submit(self.send_to_vision_ocr, image_path, index, api_timeout=80)] = index
+                    elif engine.lower() == "tesseract-ocr":
+                        futures_to_index[executor.submit(self.send_to_tesseract_ocr, image_path, index)] = index
 
             try:
                 pending_futures = set(futures_to_index)
@@ -2843,9 +2892,17 @@ class App(TkinterDnD.Tk):
                             result = future.result()
                             if result and len(result) == 2: # Check if the result is valid; the result should be a tuple with two elements
                                 response, index = result  # Unpack the response and row index
-                                responses_dict[index] = response  # Store the response with its row index
-                                processed_rows += 1
-                                self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
+                                if isinstance(response, dict) and response.get("error") == "tesseract_not_found":
+                                    tesseract_missing = True
+                                    responses_dict[index] = "Error"
+                                    processed_rows += 1
+                                    self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
+                                    if row_index is not None:
+                                        self.error_logging("HTR Function: Tesseract OCR is not installed or on PATH.")
+                                else:
+                                    responses_dict[index] = response  # Store the response with its row index
+                                    processed_rows += 1
+                                    self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
                             else:
                                 if row_index is not None:
                                     responses_dict[row_index] = ""  # Store an empty string if the response is invalid
@@ -2867,17 +2924,22 @@ class App(TkinterDnD.Tk):
                 self.close_progress_window(progress_window)
                 if use_status_message:
                     self.clear_status_message()
+                if tesseract_missing:
+                    messagebox.showwarning(
+                        "Tesseract Not Found",
+                        "Tesseract OCR is not installed or not on your PATH. Please install Tesseract to use this option."
+                    )
 
                 # Process the data from the futures that completed successfully
                 error_count = 0
-                is_vision_engine = selected_engine.lower() == "google-vision-ocr"
+                is_ocr_engine = selected_engine.lower() in ("google-vision-ocr", "tesseract-ocr")
                 if all_or_one_flag == "Current Page":
                     if row in responses_dict:
                         if responses_dict[row] == "Error":
                             error_count += 1
                         else:                           
                             if ai_job == "HTR":
-                                if is_vision_engine and isinstance(responses_dict[row], dict):
+                                if is_ocr_engine and isinstance(responses_dict[row], dict):
                                     if not self.main_df.at[row, 'Original_Text']:
                                         self.main_df.at[row, 'Original_Text'] = responses_dict[row].get("text", "")
                                         self.main_df.at[row, 'Text_Toggle'] = "Original Text"
@@ -2897,7 +2959,7 @@ class App(TkinterDnD.Tk):
                             error_count += 1
                         else:
                             if ai_job == "HTR":
-                                if is_vision_engine and isinstance(response, dict):
+                                if is_ocr_engine and isinstance(response, dict):
                                     if not self.main_df.at[index, 'Original_Text']:
                                         self.main_df.at[index, 'Original_Text'] = response.get("text", "")
                                         self.main_df.at[index, 'Text_Toggle'] = "Original Text"
@@ -2936,6 +2998,36 @@ class App(TkinterDnD.Tk):
             self.ai_function(all_or_one_flag=all_or_one_flag, ai_job="HTR")
         finally:
             self.HTR_model = previous_model
+
+    def run_tesseract_ocr(self, all_or_one_flag="All Pages"):
+        previous_model = self.HTR_model
+        try:
+            self.HTR_model = "tesseract-ocr"
+            self.ai_function(all_or_one_flag=all_or_one_flag, ai_job="HTR")
+        finally:
+            self.HTR_model = previous_model
+
+    def run_ocr_htr_workflow(self, all_or_one_flag="All Pages"):
+        if self.main_df.empty:
+            messagebox.showwarning("No Images", "No images are available for processing.")
+            return
+
+        self.append_log("Starting OCR + HTR workflow (Tesseract -> Gemini).")
+        self.set_status_message("Running Tesseract OCR...")
+        self.run_tesseract_ocr(all_or_one_flag=all_or_one_flag)
+        self.append_log("Tesseract OCR completed.")
+
+        previous_model = self.HTR_model
+        try:
+            self.HTR_model = "gemini-3-pro-preview"
+            self.set_status_message("Running Gemini HTR...")
+            self.ai_function(all_or_one_flag=all_or_one_flag, ai_job="HTR")
+        finally:
+            self.HTR_model = previous_model
+
+        self.set_status_message("hOCR is ready to export.")
+        self.append_log("Gemini HTR completed.")
+        self.append_log("hOCR is ready to save: File -> Export hOCR (Aligned Transcript).")
 
 # API Calls to OpenAI, Google, and Anthropic to process text and images for transcription and analysis
 
@@ -3051,6 +3143,62 @@ class App(TkinterDnD.Tk):
                 continue
 
         return "Error", index
+
+    def send_to_tesseract_ocr(self, image_path, index):
+        if not image_path or not os.path.exists(image_path):
+            return "Error", index
+
+        try:
+            with Image.open(image_path) as img:
+                ocr_payload = self.extract_tesseract_ocr_data(img)
+        except TesseractNotFoundError:
+            return {"error": "tesseract_not_found"}, index
+        except Exception as e:
+            print(f"Tesseract OCR error: {e}")
+            return "Error", index
+
+        return {
+            "text": ocr_payload.get("text", ""),
+            "ocr_data": ocr_payload
+        }, index
+
+    def extract_tesseract_ocr_data(self, image):
+        image_width, image_height = image.size
+        data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+
+        lines = []
+        current_key = None
+        current_words = []
+
+        for i in range(len(data.get("text", []))):
+            text = (data["text"][i] or "").strip()
+            if not text:
+                continue
+            key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+            if current_key is None:
+                current_key = key
+            if key != current_key and current_words:
+                lines.append(self.build_vision_line(current_words))
+                current_words = []
+                current_key = key
+
+            left = int(data["left"][i])
+            top = int(data["top"][i])
+            width = int(data["width"][i])
+            height = int(data["height"][i])
+            bbox = [left, top, left + width, top + height]
+            current_words.append({"text": text, "bbox": bbox})
+
+        if current_words:
+            lines.append(self.build_vision_line(current_words))
+
+        full_text = "\n".join(line.get("text", "") for line in lines).strip()
+
+        return {
+            "text": full_text,
+            "lines": lines,
+            "image_size": {"width": image_width, "height": image_height}
+        }
 
     def extract_vision_ocr_data(self, response, image_path):
         lines = []
