@@ -34,6 +34,7 @@ class App(TkinterDnD.Tk):
         self.title("Transcription Pearl 1.0 beta")  # Set the window title
         self.link_nav = 0
         self.geometry("1200x800")
+        self.setup_styles()
 
         if os.name == 'nt':  # For Windows use the .ico file
             try:
@@ -87,6 +88,16 @@ class App(TkinterDnD.Tk):
         self.button5 = tk.Button(self.top_frame, text=">>", command=lambda: self.navigate_images(2))
         self.button5.grid(row=0, column=6, sticky="e", padx=5, pady=5)
 
+        self.action_frame = ttk.Frame(self.top_frame, style="Toolbar.TFrame")
+        self.action_frame.grid(row=1, column=0, columnspan=7, sticky="ew", padx=8, pady=(0, 8))
+        self.action_frame.grid_columnconfigure(3, weight=1)
+
+        ttk.Label(self.action_frame, text="Quick Import:", style="Toolbar.TLabel").grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(self.action_frame, text="Choose Images", style="Primary.TButton", command=self.open_image_files).grid(row=0, column=1, padx=4)
+        ttk.Button(self.action_frame, text="Choose Folder", style="Secondary.TButton", command=lambda: self.open_folder(toggle="Images without Text")).grid(row=0, column=2, padx=4)
+        ttk.Button(self.action_frame, text="Import PDF", style="Secondary.TButton", command=self.open_pdf).grid(row=0, column=3, padx=4)
+        ttk.Label(self.action_frame, text="Drag & drop also works.", style="ToolbarHint.TLabel").grid(row=0, column=4, sticky="e", padx=(8, 0))
+
         self.main_frame = tk.PanedWindow(self, orient=tk.HORIZONTAL)
         self.main_frame.grid(row=1, column=0, sticky="nsew")
 
@@ -131,6 +142,19 @@ class App(TkinterDnD.Tk):
         self.create_key_bindings()
         self.bind_key_universal_commands(self.text_display)
         self.initialize_settings()
+        self.show_empty_state()
+
+    def setup_styles(self):
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("Toolbar.TFrame", background="#f5f6f8")
+        style.configure("Toolbar.TLabel", background="#f5f6f8", foreground="#111827", font=("Arial", 10, "bold"))
+        style.configure("ToolbarHint.TLabel", background="#f5f6f8", foreground="#6b7280", font=("Arial", 10))
+        style.configure("Primary.TButton", padding=(10, 6))
+        style.configure("Secondary.TButton", padding=(10, 6))
 
     def create_menus(self):
         self.menu_bar = tk.Menu(self)
@@ -150,6 +174,7 @@ class App(TkinterDnD.Tk):
         self.file_menu.add_command(label="Save Project As...", command=self.save_project_as)
         self.file_menu.add_command(label="Save Project", command=self.save_project)
         self.file_menu.add_separator()
+        self.file_menu.add_command(label="Import Images (Choose Files)", command=self.open_image_files)
         self.file_menu.add_command(label="Import Images Only", command=lambda: self.open_folder(toggle="Images without Text"))        
         self.file_menu.add_command(label="Import Text and Images", command=lambda: self.open_folder(toggle="Images with Text"))        
         self.file_menu.add_command(label="Import PDF", command=self.open_pdf)
@@ -973,6 +998,23 @@ class App(TkinterDnD.Tk):
         
         # Update the display
         self.text_type_label.config(text="None")
+        self.show_empty_state()
+
+    def show_empty_state(self, message=None):
+        display_message = message or "Drag & drop images here\nor use Choose Images / Choose Folder."
+        self.image_display.delete("all")
+        self.image_display.update_idletasks()
+        width = max(self.image_display.winfo_width(), 400)
+        height = max(self.image_display.winfo_height(), 300)
+        self.image_display.create_text(
+            width / 2,
+            height / 2,
+            text=display_message,
+            fill="#6b7280",
+            font=("Arial", 14),
+            justify="center"
+        )
+        self.image_display.config(scrollregion=self.image_display.bbox("all"))
         
     def create_new_project(self):
         if not messagebox.askyesno("New Project", "Creating a new project will reset the current application state. This action cannot be undone. Are you sure you want to proceed?"):
@@ -1472,9 +1514,7 @@ class App(TkinterDnD.Tk):
             self.counter_update()
         else:
             print("No images to display")
-            # Clear the image display or show a placeholder image
-            self.image_display.delete("all")
-            # Clear the text display
+            self.show_empty_state()
             self.text_display.delete("1.0", tk.END)
             self.counter_update()
     
@@ -1483,6 +1523,40 @@ class App(TkinterDnD.Tk):
             self.dnd_bind('<<Drop>>', self.drop)
     
 # Loading Functions
+
+    def open_image_files(self):
+        file_paths = filedialog.askopenfilenames(
+            title="Select Images",
+            filetypes=[("Image files", "*.jpg *.jpeg *.png *.tif *.tiff"), ("All files", "*.*")]
+        )
+        if not file_paths:
+            return
+
+        self.reset_application()
+        self.project_directory = self.temp_directory
+        self.images_directory = os.path.join(self.project_directory, "images")
+        os.makedirs(self.images_directory, exist_ok=True)
+
+        supported_extensions = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+        valid_files = []
+        invalid_files = []
+        for file_path in file_paths:
+            if Path(file_path).suffix.lower() in supported_extensions:
+                valid_files.append(file_path)
+            else:
+                invalid_files.append(file_path)
+
+        if valid_files:
+            self.process_new_images(valid_files)
+        else:
+            self.show_empty_state("No valid images were selected.")
+
+        if invalid_files:
+            invalid_files_str = "\n".join(invalid_files)
+            messagebox.showwarning(
+                "Invalid Files",
+                f"The following files were not processed because they are not valid image files:\n\n{invalid_files_str}"
+            )
 
     def open_folder(self, toggle):
         directory = filedialog.askdirectory()
