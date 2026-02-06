@@ -4,7 +4,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 import pandas as pd
 import fitz, re, base64, os, shutil, time, asyncio, string, json
 from PIL import Image, ImageTk, ImageOps
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 
@@ -2346,6 +2346,8 @@ class App(TkinterDnD.Tk):
         futures_to_index = {} # Store the futures with their row index
         processed_rows = 0 # Initialize the number of processed rows
         use_log_progress = ai_job == "HTR" and "gemini" in self.HTR_model.lower()
+        heartbeat_interval = 10
+        last_heartbeat = time.time()
         progress_window = None
         progress_bar = None
         progress_label = None
@@ -2358,9 +2360,11 @@ class App(TkinterDnD.Tk):
                 if not use_log_progress:
                     progress_window, progress_bar, progress_label = self.create_progress_window("Applying HTR to Current Page...")
                 self.log_message("Starting HTR on current page.")
+                self.update_idletasks()
             elif ai_job == "Correct":
                 progress_window, progress_bar, progress_label = self.create_progress_window("Correcting Current Page...")
                 self.log_message("Starting correction on current page.")
+                self.update_idletasks()
 
         else: # Process all pages
             batch_df = self.main_df[self.main_df['Image_Path'].notna() & (self.main_df['Image_Path'] != '')]
@@ -2369,9 +2373,11 @@ class App(TkinterDnD.Tk):
                 if not use_log_progress:
                     progress_window, progress_bar, progress_label = self.create_progress_window("Applying HTR to All Pages...")
                 self.log_message(f"Starting HTR on {total_rows} page(s).")
+                self.update_idletasks()
             elif ai_job == "Correct":
                 progress_window, progress_bar, progress_label = self.create_progress_window("Correcting All Pages...")
                 self.log_message(f"Starting correction on {total_rows} page(s).")
+                self.update_idletasks()
     
         if total_rows == 0: # Display a warning if no images are available for processing
             if progress_window:
@@ -2420,27 +2426,39 @@ class App(TkinterDnD.Tk):
                         futures_to_index[executor.submit(asyncio.run, self.run_send_to_claude_api(system_prompt, user_prompt, temp, image_base64, text_to_process, val_text, engine, index, False, api_timeout=80))] = index
 
             try:
-                for future in as_completed(futures_to_index):
-                    try:
-                        result = future.result()
-                        if result and len(result) == 2: # Check if the result is valid; the result should be a tuple with two elements
-                            response, index = future.result()  # Unpack the response and row index
-                            responses_dict[index] = response  # Store the response with its row index
-                            processed_rows += 1
-                            if progress_bar and progress_label:
-                                self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
-                            if use_log_progress:
-                                self.log_message(f"HTR progress: {processed_rows}/{total_rows} page(s) completed.")
-                        else:
-                            responses_dict[index] = ""  # Store an empty string if the response is invalid
-                            processed_rows += 1
-                            self.error_logging(f"HTR Function: An error occurred while processing row {futures_to_index[future]}")
+                pending_futures = set(futures_to_index)
+                while pending_futures:
+                    done, pending_futures = wait(pending_futures, timeout=1)
+                    if not done:
+                        if use_log_progress and time.time() - last_heartbeat >= heartbeat_interval:
+                            self.log_message("Gemini HTR is still running...")
+                            last_heartbeat = time.time()
+                        self.update_idletasks()
+                        self.update()
+                        continue
 
-                    except Exception as e:
-                        responses_dict[index] = ""  # Store an empty string if an error occurs
-                        # Use a messagebox to display an error
-                        messagebox.showerror("Error", f"An error occurred while processing row {futures_to_index[future]}: {e}")
-                        self.error_logging(f"HTR Function: An error occurred while processing row {futures_to_index[future]}: {e}")   
+                    for future in done:
+                        index = futures_to_index[future]
+                        try:
+                            result = future.result()
+                            if result and len(result) == 2: # Check if the result is valid; the result should be a tuple with two elements
+                                response, index = result  # Unpack the response and row index
+                                responses_dict[index] = response  # Store the response with its row index
+                                processed_rows += 1
+                                if progress_bar and progress_label:
+                                    self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
+                                if use_log_progress:
+                                    self.log_message(f"HTR progress: {processed_rows}/{total_rows} page(s) completed.")
+                            else:
+                                responses_dict[index] = ""  # Store an empty string if the response is invalid
+                                processed_rows += 1
+                                self.error_logging(f"HTR Function: An error occurred while processing row {index}")
+
+                        except Exception as e:
+                            responses_dict[index] = ""  # Store an empty string if an error occurs
+                            # Use a messagebox to display an error
+                            messagebox.showerror("Error", f"An error occurred while processing row {index}: {e}")
+                            self.error_logging(f"HTR Function: An error occurred while processing row {index}: {e}")   
 
             finally:
                 if progress_window:
