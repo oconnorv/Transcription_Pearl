@@ -31,6 +31,11 @@ class App(TkinterDnD.Tk):
         self.title("Transcription Pearl 1.0 beta")  # Set the window title
         self.link_nav = 0
         self.geometry("1200x800")
+        self.style = ttk.Style(self)
+        try:
+            self.style.theme_use("clam")
+        except tk.TclError:
+            pass
 
         if os.name == 'nt':  # For Windows use the .ico file
             try:
@@ -95,31 +100,37 @@ class App(TkinterDnD.Tk):
         self.main_frame.add(self.image_display)
 
         self.bottom_frame = tk.Frame(self)
-        self.bottom_frame.grid_rowconfigure(0, weight=1)
+        self.bottom_frame.grid_rowconfigure(0, weight=0)
+        self.bottom_frame.grid_rowconfigure(1, weight=1)
         self.bottom_frame.grid(row=2, column=0, sticky="nsew")
 
         self.bottom_frame.grid_columnconfigure(0, weight=1)
         self.bottom_frame.grid_columnconfigure(1, weight=1)
 
-        button_frame = tk.Frame(self.bottom_frame)
-        button_frame.grid(row=0, column=0, sticky="nsw")
+        toolbar_frame = ttk.Frame(self.bottom_frame)
+        toolbar_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
+        toolbar_frame.grid_columnconfigure(4, weight=1)
 
-        button_frame.grid_columnconfigure(0, weight=0)
-        button_frame.grid_columnconfigure(1, weight=0)
-        button_frame.grid_columnconfigure(2, weight=1)
-        button_frame.grid_rowconfigure(0, weight=1)
-        button_frame.grid_rowconfigure(1, weight=1)
-        button_frame.grid_rowconfigure(2, weight=1)
-        button_frame.grid_rowconfigure(3, weight=1)
+        ttk.Label(toolbar_frame, text="Import:").grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(toolbar_frame, text="Images...", command=self.open_files).grid(row=0, column=1, padx=4)
+        ttk.Button(toolbar_frame, text="Folder...", command=lambda: self.open_folder(toggle="Images without Text")).grid(row=0, column=2, padx=4)
+        ttk.Button(toolbar_frame, text="PDF...", command=self.open_pdf).grid(row=0, column=3, padx=4)
+        ttk.Label(toolbar_frame, text="Tip: Drag & drop images or PDFs into the window.").grid(row=0, column=4, sticky="w", padx=10)
 
-        textbox_frame = tk.Frame(self.bottom_frame)
-        textbox_frame.grid(row=0, column=1, sticky="nsew")
+        log_frame = ttk.Frame(self.bottom_frame)
+        log_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=(0, 10))
+        log_frame.grid_columnconfigure(0, weight=1)
+        log_frame.grid_rowconfigure(1, weight=1)
 
-        textbox_frame.grid_columnconfigure(0, weight=0)
-        textbox_frame.grid_columnconfigure(1, weight=1)
-        textbox_frame.grid_rowconfigure(0, weight=1)
-        textbox_frame.grid_rowconfigure(1, weight=1)
-        textbox_frame.grid_rowconfigure(2, weight=1)
+        ttk.Label(log_frame, text="Activity Log").grid(row=0, column=0, sticky="w")
+        self.log_text = tk.Text(log_frame, height=8, wrap="word", state="disabled", font=("Arial", 10))
+        log_scroll = ttk.Scrollbar(log_frame, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        self.log_text.grid(row=1, column=0, sticky="nsew")
+        log_scroll.grid(row=1, column=1, sticky="ns")
+        self.log_text.tag_config("INFO", foreground="#1f2937")
+        self.log_text.tag_config("WARN", foreground="#b45309")
+        self.log_text.tag_config("ERROR", foreground="#b91c1c")
        
         # Initialize initial settings 
         self.initialize_temp_directory()
@@ -128,6 +139,7 @@ class App(TkinterDnD.Tk):
         self.create_key_bindings()
         self.bind_key_universal_commands(self.text_display)
         self.initialize_settings()
+        self.log_message("Ready. Drag & drop files or use the import buttons below.")
 
     def create_menus(self):
         self.menu_bar = tk.Menu(self)
@@ -147,8 +159,9 @@ class App(TkinterDnD.Tk):
         self.file_menu.add_command(label="Save Project As...", command=self.save_project_as)
         self.file_menu.add_command(label="Save Project", command=self.save_project)
         self.file_menu.add_separator()
-        self.file_menu.add_command(label="Import Images Only", command=lambda: self.open_folder(toggle="Images without Text"))        
-        self.file_menu.add_command(label="Import Text and Images", command=lambda: self.open_folder(toggle="Images with Text"))        
+        self.file_menu.add_command(label="Import Images...", command=self.open_files)
+        self.file_menu.add_command(label="Import Images Only (Folder)", command=lambda: self.open_folder(toggle="Images without Text"))        
+        self.file_menu.add_command(label="Import Text and Images (Folder)", command=lambda: self.open_folder(toggle="Images with Text"))        
         self.file_menu.add_command(label="Import PDF", command=self.open_pdf)
 
         self.file_menu.add_separator()
@@ -338,6 +351,7 @@ class App(TkinterDnD.Tk):
         try:
             os.makedirs(self.temp_directory, exist_ok=True)
             os.makedirs(self.images_directory, exist_ok=True)
+            self.log_message("Temporary workspace initialized.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create temp directories: {e}")
             self.error_logging(f"Failed to create temp directories: {e}")
@@ -772,6 +786,7 @@ class App(TkinterDnD.Tk):
         return output_path
     
     def process_new_images(self, source_paths):
+        self.log_message(f"Processing {len(source_paths)} new image(s).")
         successful_copies = 0
         for source_path in source_paths:
             new_index = len(self.main_df)
@@ -801,12 +816,15 @@ class App(TkinterDnD.Tk):
             except Exception as e:
                 print(f"Error processing file {source_path}: {e}")
                 messagebox.showerror("Error", f"Failed to process the image {source_path}:\n{e}")
+                self.log_message(f"Failed to process image: {source_path}", level="ERROR")
 
         if successful_copies > 0:
             self.refresh_display()
+            self.log_message(f"Imported {successful_copies} image(s).")
         else:
             print("No images were successfully processed")
             messagebox.showinfo("Information", "No images were successfully processed")
+            self.log_message("No images were successfully processed.", level="WARN")
 
     def delete_current_image(self):
         if self.main_df.empty:
@@ -1216,8 +1234,10 @@ class App(TkinterDnD.Tk):
         if pdf_file is None:
             pdf_file = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
         if not pdf_file:
+            self.log_message("PDF import canceled.", level="WARN")
             return
 
+        self.log_message(f"Processing PDF: {os.path.basename(pdf_file)}")
         progress_window, progress_bar, progress_label = self.create_progress_window("Processing PDF...")
 
         try:
@@ -1267,6 +1287,7 @@ class App(TkinterDnD.Tk):
             self.refresh_display()
             self.close_progress_window(progress_window)
             messagebox.showinfo("Success", f"PDF processed successfully. {total_pages} pages extracted.")
+            self.log_message(f"PDF processed successfully ({total_pages} pages).")
 
         except Exception as e:
             self.close_progress_window(progress_window)
@@ -1375,8 +1396,19 @@ class App(TkinterDnD.Tk):
                 if additional_info:
                     log_message += f" - Additional Info: {additional_info}"
                 file.write(log_message + "\n")
+            self.log_message(error_message, level="ERROR")
         except Exception as e:
             print(f"Error logging failed: {e}")
+
+    def log_message(self, message, level="INFO"):
+        if not hasattr(self, "log_text"):
+            return
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] {level}: {message}\n"
+        self.log_text.configure(state="normal")
+        self.log_text.insert(tk.END, formatted_message, level)
+        self.log_text.configure(state="disabled")
+        self.log_text.see(tk.END)
     
     def drop(self, event):
         file_paths = event.data
@@ -1416,6 +1448,7 @@ class App(TkinterDnD.Tk):
 
         # Process valid image files
         if valid_images:
+            self.log_message(f"Drag-and-drop: importing {len(valid_images)} image(s).")
             self.process_new_images(valid_images)
             
             # Clean up temporary converted files
@@ -1429,6 +1462,7 @@ class App(TkinterDnD.Tk):
         if pdf_files:
             for pdf_file in pdf_files:
                 try:
+                    self.log_message(f"Drag-and-drop: importing PDF {os.path.basename(pdf_file)}")
                     self.open_pdf(pdf_file)
                 except Exception as e:
                     print(f"Error processing PDF file {pdf_file}: {e}")
@@ -1440,6 +1474,7 @@ class App(TkinterDnD.Tk):
             print(f"Invalid files: {invalid_files_str}")
             messagebox.showwarning("Invalid Files", 
                 f"The following files were not processed because they are not valid image or PDF files:\n\n{invalid_files_str}")
+            self.log_message(f"Skipped {len(invalid_files)} invalid file(s).", level="WARN")
                             
     def refresh_display(self):
         if not self.main_df.empty:
@@ -1454,12 +1489,43 @@ class App(TkinterDnD.Tk):
             # Clear the text display
             self.text_display.delete("1.0", tk.END)
             self.counter_update()
+            self.log_message("No images to display.", level="WARN")
     
     def enable_drag_and_drop(self):
             self.drop_target_register(DND_FILES)
             self.dnd_bind('<<Drop>>', self.drop)
     
 # Loading Functions
+
+    def open_files(self):
+        file_paths = filedialog.askopenfilenames(
+            title="Select Images or PDFs",
+            filetypes=[
+                ("Images and PDFs", "*.jpg *.jpeg *.png *.tif *.tiff *.pdf"),
+                ("Image files", "*.jpg *.jpeg *.png *.tif *.tiff"),
+                ("PDF files", "*.pdf")
+            ]
+        )
+        if not file_paths:
+            self.log_message("Import canceled. No files selected.", level="WARN")
+            return
+
+        images = []
+        pdfs = []
+        for file_path in file_paths:
+            lower_path = file_path.lower()
+            if lower_path.endswith(".pdf"):
+                pdfs.append(file_path)
+            else:
+                images.append(file_path)
+
+        if images:
+            self.log_message(f"Importing {len(images)} image(s) from file picker.")
+            self.process_new_images(list(images))
+
+        for pdf_file in pdfs:
+            self.log_message(f"Importing PDF: {os.path.basename(pdf_file)}")
+            self.open_pdf(pdf_file)
 
     def open_folder(self, toggle):
         directory = filedialog.askdirectory()
@@ -1473,14 +1539,19 @@ class App(TkinterDnD.Tk):
             self.reset_application()
 
             if toggle == "Images without Text":
+                self.log_message(f"Loading images from folder: {directory}")
                 self.load_files_from_folder_no_text()
             else:
+                self.log_message(f"Loading images + text from folder: {directory}")
                 self.load_files_from_folder()
             self.enable_drag_and_drop()
+        else:
+            self.log_message("Folder selection canceled.", level="WARN")
 
     def load_files_from_folder(self):
         if not self.directory_path:
             messagebox.showerror("Error", "No directory selected.")
+            self.log_message("No directory selected for import.", level="ERROR")
             return
 
         # Reset DataFrames
@@ -1508,6 +1579,7 @@ class App(TkinterDnD.Tk):
 
         if not image_files:
             messagebox.showinfo("No Files", "No image files found in the selected directory.")
+            self.log_message("No image files found in the selected directory.", level="WARN")
             return
 
         # Sort files based on the numeric prefix
@@ -1521,6 +1593,7 @@ class App(TkinterDnD.Tk):
         # Check if the number of image and text files match
         if len(image_files) != len(text_files):
             messagebox.showerror("Error", "The number of image files and text files does not match.")
+            self.log_message("Image/text file count mismatch in selected folder.", level="ERROR")
             return
 
         # Populate the DataFrame
@@ -1554,8 +1627,10 @@ class App(TkinterDnD.Tk):
             self.load_text()
         else:
             messagebox.showinfo("No Files", "No files found in the selected directory.")
+            self.log_message("No files found in the selected directory.", level="WARN")
 
         self.counter_update()
+        self.log_message(f"Loaded {len(self.main_df)} page(s) from folder.")
 
     def load_files_from_folder_no_text(self):
         if self.directory_path:
@@ -1593,6 +1668,7 @@ class App(TkinterDnD.Tk):
 
             if not image_files:
                 messagebox.showinfo("No Files", "No image files found in the selected directory.")
+                self.log_message("No image files found in the selected directory.", level="WARN")
                 return
 
             # Sort image files based on the numeric part after the underscore
@@ -1639,8 +1715,10 @@ class App(TkinterDnD.Tk):
                 self.load_text()
             else:
                 messagebox.showinfo("No Files", "No files found in the selected directory.")
+                self.log_message("No files found in the selected directory.", level="WARN")
 
             self.counter_update()  
+            self.log_message(f"Loaded {len(self.main_df)} image(s) without text.")
              
     def load_text(self):
         index = self.page_counter
@@ -2267,30 +2345,43 @@ class App(TkinterDnD.Tk):
         responses_dict = {} # Store the responses with their row index
         futures_to_index = {} # Store the futures with their row index
         processed_rows = 0 # Initialize the number of processed rows
+        use_log_progress = ai_job == "HTR" and "gemini" in self.HTR_model.lower()
+        progress_window = None
+        progress_bar = None
+        progress_label = None
 
         if all_or_one_flag == "Current Page": # Process the current page only
             total_rows = 1
             row = self.page_counter
             batch_df = self.main_df.loc[[row]]
             if ai_job == "HTR":
-                progress_window, progress_bar, progress_label = self.create_progress_window("Applying HTR to Current Page...")
+                if not use_log_progress:
+                    progress_window, progress_bar, progress_label = self.create_progress_window("Applying HTR to Current Page...")
+                self.log_message("Starting HTR on current page.")
             elif ai_job == "Correct":
                 progress_window, progress_bar, progress_label = self.create_progress_window("Correcting Current Page...")
+                self.log_message("Starting correction on current page.")
 
         else: # Process all pages
             batch_df = self.main_df[self.main_df['Image_Path'].notna() & (self.main_df['Image_Path'] != '')]
             total_rows = len(batch_df)
             if ai_job == "HTR":
-                progress_window, progress_bar, progress_label = self.create_progress_window("Applying HTR to All Pages...")
+                if not use_log_progress:
+                    progress_window, progress_bar, progress_label = self.create_progress_window("Applying HTR to All Pages...")
+                self.log_message(f"Starting HTR on {total_rows} page(s).")
             elif ai_job == "Correct":
                 progress_window, progress_bar, progress_label = self.create_progress_window("Correcting All Pages...")
+                self.log_message(f"Starting correction on {total_rows} page(s).")
     
         if total_rows == 0: # Display a warning if no images are available for processing
-            self.close_progress_window(progress_window)
+            if progress_window:
+                self.close_progress_window(progress_window)
             messagebox.showwarning("No Images", "No images are available for processing.")
+            self.log_message("No images available for processing.", level="WARN")
             return
 
-        self.update_progress(progress_bar, progress_label, processed_rows, total_rows) # Update the progress bar and label
+        if progress_bar and progress_label:
+            self.update_progress(progress_bar, progress_label, processed_rows, total_rows) # Update the progress bar and label
 
         # Process the images in batches
         with ThreadPoolExecutor(max_workers=batch_size) as executor:
@@ -2336,7 +2427,10 @@ class App(TkinterDnD.Tk):
                             response, index = future.result()  # Unpack the response and row index
                             responses_dict[index] = response  # Store the response with its row index
                             processed_rows += 1
-                            self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
+                            if progress_bar and progress_label:
+                                self.update_progress(progress_bar, progress_label, processed_rows, total_rows)
+                            if use_log_progress:
+                                self.log_message(f"HTR progress: {processed_rows}/{total_rows} page(s) completed.")
                         else:
                             responses_dict[index] = ""  # Store an empty string if the response is invalid
                             processed_rows += 1
@@ -2349,7 +2443,8 @@ class App(TkinterDnD.Tk):
                         self.error_logging(f"HTR Function: An error occurred while processing row {futures_to_index[future]}: {e}")   
 
             finally:
-                self.close_progress_window(progress_window)
+                if progress_window:
+                    self.close_progress_window(progress_window)
 
                 # Process the data from the futures that completed successfully
                 error_count = 0
@@ -2378,6 +2473,8 @@ class App(TkinterDnD.Tk):
                 self.load_text()
                 self.counter_update()
                 self.toggle_button_state()
+                if use_log_progress:
+                    self.log_message("HTR completed.")
 
                 # Display message box if errors were found
                 if error_count > 0:
